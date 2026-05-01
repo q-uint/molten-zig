@@ -1,0 +1,4 @@
+[submodule "vendor/zig"]
+	path = vendor/zig
+	url = git@codeberg.org:quint/zig.git
+	branch = spirv-fixes

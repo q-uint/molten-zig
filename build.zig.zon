@@ -1,0 +1,17 @@
+.{
+    .name = .molten_zig,
+    .version = "0.0.0",
+    .fingerprint = 0x8f069ad3e19df3d, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "host.zig",
+        "probe.zig",
+        "shader.comp",
+        "scripts",
+        "flake.nix",
+        "flake.lock",
+    },
+}
