@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) !void {
     const exe = b.addExecutable(.{ .name = "matrix_transpose", .root_module = exe_mod });
     b.installArtifact(exe);
 
-    const kernel = molten_build.compileKernel(b, dep, "kernel", b.path("src/kernel.zig"));
+    const kernel = molten_build.compileKernel(b, dep, "kernel", b.path("src/kernel.zig"), .{});
     const install_kernel_spv = b.addInstallFileWithDir(kernel.spv, .prefix, "kernel.spv");
 
     const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });

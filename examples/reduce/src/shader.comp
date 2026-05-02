@@ -1,0 +1,34 @@
+#version 450
+
+// Generic reduce. The macros T, OP, IDENTITY are filled in via -D flags
+// at compile time. This file gets compiled twice with different defines
+// to produce sum_glsl.spv and max_glsl.spv. Each macro is one of the
+// awkward GLSL substitutes for the comptime parameters Reduce(...) takes
+// in the Zig version.
+
+#ifndef T
+#error "define T (e.g. -DT=uint)"
+#endif
+#ifndef OP
+#error "define OP(a,b) (e.g. -DOP(a,b)=((a)+(b)))"
+#endif
+#ifndef IDENTITY
+#error "define IDENTITY (e.g. -DIDENTITY=0u)"
+#endif
+
+const uint TILE = 64u;
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer In  { T data[]; } in_buf;
+layout(set = 0, binding = 1)          buffer Out { T data[]; } out_buf;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint base = gid * TILE;
+    T acc = IDENTITY;
+    for (uint k = 0u; k < TILE; ++k) {
+        acc = OP(acc, in_buf.data[base + k]);
+    }
+    out_buf.data[gid] = acc;
+}

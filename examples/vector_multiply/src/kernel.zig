@@ -22,8 +22,7 @@ const global_invocation_id = @extern(
     .{ .name = "global_invocation_id" },
 );
 
-// Workgroup size: the backend emits LocalSize 1 1 1 by default and rejects a
-// second OpExecutionMode, so the host must dispatch N x 1 x 1 to match.
+// LocalSize defaults to 1 1 1; host dispatches N x 1 x 1 to match.
 export fn main() callconv(.spirv_kernel) void {
     const i = global_invocation_id.*[0];
     if (i >= N) return;

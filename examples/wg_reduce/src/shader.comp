@@ -1,0 +1,42 @@
+#version 450
+
+#ifndef T
+#error "define T (e.g. -DT=uint)"
+#endif
+#ifndef OP
+#error "define OP(a,b) (e.g. -DOP(a,b)=((a)+(b)))"
+#endif
+#ifndef IDENTITY
+#error "define IDENTITY (e.g. -DIDENTITY=0u)"
+#endif
+
+const uint N = 2048u;
+const uint LOCAL = 256u;
+const uint TILE = N / LOCAL;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer In  { T data[]; } in_buf;
+layout(set = 0, binding = 1)          buffer Out { T data[]; } out_buf;
+
+shared T scratch[LOCAL];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint base = lid * TILE;
+    T acc = IDENTITY;
+    for (uint k = 0u; k < TILE; ++k) {
+        acc = OP(acc, in_buf.data[base + k]);
+    }
+    scratch[lid] = acc;
+    barrier();
+
+    for (uint stride = LOCAL / 2u; stride > 0u; stride /= 2u) {
+        if (lid < stride) {
+            scratch[lid] = OP(scratch[lid], scratch[lid + stride]);
+        }
+        barrier();
+    }
+
+    if (lid == 0u) out_buf.data[0] = scratch[0];
+}

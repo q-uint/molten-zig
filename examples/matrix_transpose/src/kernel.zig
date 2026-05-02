@@ -1,7 +1,5 @@
-// NxN f32 matrix transpose. Backend emits LocalSize 1 1 1, so the host
-// dispatches (N, N, 1) - one workgroup per output element. The 2D
-// dispatch shape is the point of this example, even though the workgroup
-// size itself is degenerate.
+// NxN f32 matrix transpose. LocalSize 1 1 1; host dispatches (N, N, 1) -
+// the 2D dispatch shape is the point of this example.
 
 const N = 64;
 const Buf = extern struct { data: [N * N]f32 };

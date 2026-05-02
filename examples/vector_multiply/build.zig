@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(exe);
 
     // Zig kernel -> SPIR-V via the patched compiler bundled with the dep.
-    const kernel = molten_build.compileKernel(b, dep, "kernel", b.path("src/kernel.zig"));
+    const kernel = molten_build.compileKernel(b, dep, "kernel", b.path("src/kernel.zig"), .{});
     const install_kernel_spv = b.addInstallFileWithDir(kernel.spv, .prefix, "kernel.spv");
 
     // GLSL parity: equivalent kernel from the molten repo's shader.comp.

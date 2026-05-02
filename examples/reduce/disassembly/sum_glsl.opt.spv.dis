@@ -1,0 +1,72 @@
+; SPIR-V
+; Version: 1.0
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 58
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %4 "main" %gl_GlobalInvocationID
+               OpExecutionMode %4 LocalSize 64 1 1
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %_runtimearr_uint ArrayStride 4
+               OpDecorate %_struct_32 BufferBlock
+               OpMemberDecorate %_struct_32 0 NonWritable
+               OpMemberDecorate %_struct_32 0 Offset 0
+               OpDecorate %34 NonWritable
+               OpDecorate %34 Binding 0
+               OpDecorate %34 DescriptorSet 0
+               OpDecorate %_runtimearr_uint_0 ArrayStride 4
+               OpDecorate %_struct_48 BufferBlock
+               OpMemberDecorate %_struct_48 0 Offset 0
+               OpDecorate %50 Binding 1
+               OpDecorate %50 DescriptorSet 0
+               OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_GlobalInvocationID = OpVariable %_ptr_Input_v3uint Input
+     %uint_0 = OpConstant %uint 0
+%_ptr_Input_uint = OpTypePointer Input %uint
+    %uint_64 = OpConstant %uint 64
+       %bool = OpTypeBool
+%_runtimearr_uint = OpTypeRuntimeArray %uint
+ %_struct_32 = OpTypeStruct %_runtimearr_uint
+%_ptr_Uniform__struct_32 = OpTypePointer Uniform %_struct_32
+         %34 = OpVariable %_ptr_Uniform__struct_32 Uniform
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Uniform_uint = OpTypePointer Uniform %uint
+      %int_1 = OpConstant %int 1
+%_runtimearr_uint_0 = OpTypeRuntimeArray %uint
+ %_struct_48 = OpTypeStruct %_runtimearr_uint_0
+%_ptr_Uniform__struct_48 = OpTypePointer Uniform %_struct_48
+         %50 = OpVariable %_ptr_Uniform__struct_48 Uniform
+     %uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_64 %uint_1 %uint_1
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %14 = OpAccessChain %_ptr_Input_uint %gl_GlobalInvocationID %uint_0
+         %15 = OpLoad %uint %14
+         %19 = OpIMul %uint %15 %uint_64
+               OpBranch %22
+         %22 = OpLabel
+         %57 = OpPhi %uint %uint_0 %5 %43 %23
+         %56 = OpPhi %uint %uint_0 %5 %46 %23
+         %29 = OpULessThan %bool %56 %uint_64
+               OpLoopMerge %24 %23 None
+               OpBranchConditional %29 %23 %24
+         %23 = OpLabel
+         %39 = OpIAdd %uint %19 %56
+         %41 = OpAccessChain %_ptr_Uniform_uint %34 %int_0 %39
+         %42 = OpLoad %uint %41
+         %43 = OpIAdd %uint %57 %42
+         %46 = OpIAdd %uint %56 %int_1
+               OpBranch %22
+         %24 = OpLabel
+         %53 = OpAccessChain %_ptr_Uniform_uint %50 %int_0 %15
+               OpStore %53 %57
+               OpReturn
+               OpFunctionEnd

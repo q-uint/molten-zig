@@ -72,6 +72,13 @@ pub const KernelArtifact = struct {
     validate: *std.Build.Step,
 };
 
+pub const CompileOptions = struct {
+    /// Files the kernel @imports - the build graph doesn't track these otherwise.
+    extra_inputs: []const std.Build.LazyPath = &.{},
+    /// Debug mode wraps integer ops in overflow checks; ReleaseFast skips them.
+    optimize: std.builtin.OptimizeMode = .Debug,
+};
+
 /// Build helper for consumers: compile a .zig kernel to a .spv file using
 /// the patched compiler at vendor/zig/zig-out/bin/zig.
 ///
@@ -81,11 +88,18 @@ pub fn compileKernel(
     dep: *std.Build.Dependency,
     kernel_name: []const u8,
     kernel_path: std.Build.LazyPath,
+    opts: CompileOptions,
 ) KernelArtifact {
     const patched_zig = dep.path("vendor/zig/zig-out/bin/zig").getPath(b);
     std.Io.Dir.cwd().access(b.graph.io, patched_zig, .{}) catch
         fatal("patched zig missing at {s} - run scripts/build-zig.sh in the molten dep first", .{patched_zig});
 
+    const opt_flag = switch (opts.optimize) {
+        .Debug => "-ODebug",
+        .ReleaseSafe => "-OReleaseSafe",
+        .ReleaseFast => "-OReleaseFast",
+        .ReleaseSmall => "-OReleaseSmall",
+    };
     const compile = b.addSystemCommand(&.{
         patched_zig,
         "build-obj",
@@ -93,8 +107,14 @@ pub fn compileKernel(
         "spirv64-vulkan",
         "-fno-llvm",
         "-fno-lld",
+        // Without -fstrip the SPIR-V module carries the full mangled
+        // generic instantiation name on every OpName, which buries the
+        // actual instructions in noise.
+        "-fstrip",
+        opt_flag,
     });
     compile.addFileArg(kernel_path);
+    for (opts.extra_inputs) |path| compile.addFileInput(path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});
     const spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
 
