@@ -67,18 +67,6 @@ fn apply(comptime T: type, comptime op: Op, a: T, b: T) T {
     };
 }
 
-inline fn workgroupBarrier() void {
-    // Execution scope = Workgroup (2), Memory scope = Workgroup (2),
-    // Memory semantics = AcquireRelease | WorkgroupMemory = 0x108.
-    asm volatile (
-        \\OpControlBarrier %exec %mem %sem
-        :
-        : [exec] "" (@as(u32, 2)),
-          [mem] "" (@as(u32, 2)),
-          [sem] "" (@as(u32, 0x108)),
-    );
-}
-
 pub const Options = struct {
     allow_non_associative: bool = false,
 };
@@ -134,14 +122,14 @@ pub fn WgReduce(
                 acc = apply(T, op, acc, in_buf.*.data[base + k]);
             }
             scratch[lid] = acc;
-            workgroupBarrier();
+            gpu.workgroupBarrier();
 
             var stride: u32 = workgroup_size / 2;
             while (stride > 0) : (stride /= 2) {
                 if (lid < stride) {
                     scratch[lid] = apply(T, op, scratch[lid], scratch[lid + stride]);
                 }
-                workgroupBarrier();
+                gpu.workgroupBarrier();
             }
 
             if (lid == 0) out_buf.*.data[0] = scratch[0];
