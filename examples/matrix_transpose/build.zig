@@ -30,14 +30,9 @@ pub fn build(b: *std.Build) !void {
     const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });
     glsl.addFileArg(b.path("src/shader.comp"));
     glsl.addArg("-o");
-    const glsl_spv = glsl.addOutputFileArg("shader.spv");
-    const val_glsl = b.addSystemCommand(&.{"spirv-val"});
-    val_glsl.addFileArg(glsl_spv);
+    const raw_glsl_spv = glsl.addOutputFileArg("shader.spv");
+    const glsl_spv = molten_build.validateSpv(b, raw_glsl_spv, "shader.spv");
     const install_glsl_spv = b.addInstallFileWithDir(glsl_spv, .prefix, "shader.spv");
-
-    const validate_step = b.step("validate", "Run spirv-val on both kernels");
-    validate_step.dependOn(kernel.validate);
-    validate_step.dependOn(&val_glsl.step);
 
     const run_zig = b.addRunArtifact(exe);
     run_zig.addFileArg(kernel.spv);
@@ -51,8 +46,7 @@ pub fn build(b: *std.Build) !void {
     const run_glsl_step = b.step("run-glsl", "Dispatch the GLSL-derived kernel");
     run_glsl_step.dependOn(&run_glsl.step);
 
-    const all = b.step("all", "Validate and dispatch both kernels");
-    all.dependOn(validate_step);
+    const all = b.step("all", "Dispatch both kernels");
     all.dependOn(&run_zig.step);
     all.dependOn(&run_glsl.step);
 

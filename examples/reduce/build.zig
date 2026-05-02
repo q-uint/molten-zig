@@ -42,12 +42,6 @@ pub fn build(b: *std.Build) !void {
         &b.addInstallFileWithDir(max_glsl.spv, .prefix, "max_glsl.spv").step,
     };
 
-    const validate_step = b.step("validate", "Run spirv-val on all four kernels");
-    validate_step.dependOn(sum_zig.validate);
-    validate_step.dependOn(max_zig.validate);
-    validate_step.dependOn(sum_glsl.validate);
-    validate_step.dependOn(max_glsl.validate);
-
     const dis_step = b.step("dis", "Disassemble each .spv (raw and spirv-opt -O) into disassembly/");
     addDisassembly(b, dis_step, sum_zig.spv, "sum_zig.spv.dis", false);
     addDisassembly(b, dis_step, max_zig.spv, "max_zig.spv.dis", false);
@@ -82,8 +76,7 @@ pub fn build(b: *std.Build) !void {
     const run_max_glsl_step = b.step("run-max-glsl", "Dispatch the GLSL max kernel");
     run_max_glsl_step.dependOn(&run_max_glsl.step);
 
-    const all = b.step("all", "Validate and dispatch every kernel");
-    all.dependOn(validate_step);
+    const all = b.step("all", "Dispatch every kernel");
     all.dependOn(&run_sum.step);
     all.dependOn(&run_max.step);
     all.dependOn(&run_sum_glsl.step);
@@ -107,12 +100,8 @@ fn compileReduceGlsl(
     glsl.addFileArg(b.path("src/shader.comp"));
     glsl.addArg("-o");
     const out_name = b.fmt("{s}.spv", .{name});
-    const spv = glsl.addOutputFileArg(out_name);
-
-    const validate = b.addSystemCommand(&.{"spirv-val"});
-    validate.addFileArg(spv);
-
-    return .{ .spv = spv, .validate = &validate.step };
+    const raw_spv = glsl.addOutputFileArg(out_name);
+    return .{ .spv = molten_build.validateSpv(b, raw_spv, out_name) };
 }
 
 fn addDisassembly(

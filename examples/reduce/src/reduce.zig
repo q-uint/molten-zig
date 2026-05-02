@@ -7,6 +7,8 @@
 // the kernel body doesn't read it (we don't have shared memory or
 // barriers). The host folds partials.
 
+const gpu = @import("std").gpu;
+
 pub const Op = enum {
     add,
     mul,
@@ -114,19 +116,15 @@ pub fn Reduce(
             .name = "out_buf",
             .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } },
         });
-        const global_invocation_id = @extern(
-            *addrspace(.input) @Vector(3, u32),
-            .{ .name = "global_invocation_id" },
-        );
 
         pub const groups: [3]u32 = .{ partials / workgroup_size, 1, 1 };
 
         pub fn main() callconv(.spirv_kernel) void {
-            @import("std").gpu.executionMode(main, .{
+            gpu.executionMode(main, .{
                 .local_size = .{ .x = workgroup_size, .y = 1, .z = 1 },
             });
 
-            const gid = global_invocation_id.*[0];
+            const gid = gpu.global_invocation_id[0];
             if (gid >= partials) return;
             const base = gid * tile;
 

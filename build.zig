@@ -54,22 +54,19 @@ pub fn build(b: *std.Build) !void {
     const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });
     glsl.addFileArg(b.path("shader.comp"));
     glsl.addArg("-o");
-    const glsl_spv = glsl.addOutputFileArg("shader.spv");
+    const raw_glsl_spv = glsl.addOutputFileArg("shader.spv");
+    const glsl_spv = validateSpv(b, raw_glsl_spv, "shader.spv");
     const install_glsl_spv = b.addInstallFileWithDir(glsl_spv, .prefix, "shader.spv");
-
-    const val_glsl = b.addSystemCommand(&.{"spirv-val"});
-    val_glsl.addFileArg(glsl_spv);
 
     const glsl_step = b.step("glsl-spv", "Compile shader.comp -> shader.spv with glslangValidator");
     glsl_step.dependOn(&install_glsl_spv.step);
-    glsl_step.dependOn(&val_glsl.step);
 }
 
 pub const KernelArtifact = struct {
     /// LazyPath of the produced .spv. Use with addFileArg / @embedFile via b.addEmbedFile.
+    /// When `validate` is enabled (the default), anything depending on this path
+    /// transitively depends on spirv-val succeeding.
     spv: std.Build.LazyPath,
-    /// Step running spirv-val on the produced .spv. Hook into a top-level step.
-    validate: *std.Build.Step,
 };
 
 pub const CompileOptions = struct {
@@ -77,6 +74,10 @@ pub const CompileOptions = struct {
     extra_inputs: []const std.Build.LazyPath = &.{},
     /// Debug mode wraps integer ops in overflow checks; ReleaseFast skips them.
     optimize: std.builtin.OptimizeMode = .Debug,
+    /// Run spirv-val on the produced .spv and gate consumers on it succeeding.
+    /// Set false to skip validation - useful when iterating on the SPIR-V backend
+    /// itself and producing output that is not yet valid.
+    validate: bool = true,
 };
 
 /// Build helper for consumers: compile a .zig kernel to a .spv file using
@@ -116,12 +117,27 @@ pub fn compileKernel(
     compile.addFileArg(kernel_path);
     for (opts.extra_inputs) |path| compile.addFileInput(path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});
-    const spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
+    const raw_spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
 
+    if (!opts.validate) return .{ .spv = raw_spv };
+    return .{ .spv = validateSpv(b, raw_spv, out_name) };
+}
+
+/// Run spirv-val on `spv` and return a LazyPath that consumers must use
+/// instead. Any step depending on the returned path transitively depends on
+/// validation succeeding, so an invalid module fails the build before
+/// anything downstream (install, run, disassemble) gets to see it.
+pub fn validateSpv(
+    b: *std.Build,
+    spv: std.Build.LazyPath,
+    basename: []const u8,
+) std.Build.LazyPath {
     const validate = b.addSystemCommand(&.{"spirv-val"});
     validate.addFileArg(spv);
 
-    return .{ .spv = spv, .validate = &validate.step };
+    const wf = b.addWriteFiles();
+    wf.step.dependOn(&validate.step);
+    return wf.addCopyFile(spv, basename);
 }
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {

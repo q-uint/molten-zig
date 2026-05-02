@@ -116,10 +116,6 @@ pub fn WgReduce(
             .name = "out_buf",
             .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } },
         });
-        const local_invocation_id = @extern(
-            *addrspace(.input) @Vector(3, u32),
-            .{ .name = "local_invocation_id" },
-        );
 
         var scratch: [workgroup_size]T addrspace(.shared) = undefined;
 
@@ -130,7 +126,7 @@ pub fn WgReduce(
                 .local_size = .{ .x = workgroup_size, .y = 1, .z = 1 },
             });
 
-            const lid = local_invocation_id.*[0];
+            const lid = gpu.local_invocation_id[0];
             const base = lid * tile;
 
             var acc: T = identity(T, op);
