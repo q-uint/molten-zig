@@ -79,7 +79,7 @@ fn dispatch(
 
     try in.write(input);
 
-    var pipeline = try ctx.loadPipeline(spv, 2);
+    var pipeline = try ctx.loadPipeline(spv, .{ .binding_count = 2 });
     defer pipeline.deinit();
     try pipeline.dispatch(&.{ in.bind(), out.bind() }, .{ .groups = .{ 1, 1, 1 } });
 

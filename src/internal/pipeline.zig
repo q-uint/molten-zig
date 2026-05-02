@@ -10,11 +10,19 @@ pub const BindEntry = struct {
 
 pub const DispatchOptions = struct {
     groups: [3]u32,
+    push: []const u8 = &.{},
+};
+
+pub const PipelineOptions = struct {
+    binding_count: u32,
+    push_constant_size: u32 = 0,
 };
 
 /// Upper bound on storage-buffer bindings per pipeline. Lets dispatch() use
 /// stack scratch arrays without an allocator. Bump if a real shader needs more.
 pub const MAX_BINDINGS: u32 = 16;
+
+pub const MAX_PUSH_CONSTANT_SIZE: u32 = 128;
 
 pub const Pipeline = struct {
     ctx: *Context,
@@ -23,10 +31,15 @@ pub const Pipeline = struct {
     pl_layout: vk.VkPipelineLayout,
     pipeline: vk.VkPipeline,
     binding_count: u32,
+    push_constant_size: u32,
 
-    pub fn init(ctx: *Context, spv_bytes: []const u8, binding_count: u32) !Pipeline {
+    pub fn init(ctx: *Context, spv_bytes: []const u8, options: PipelineOptions) !Pipeline {
         if (spv_bytes.len % 4 != 0 or spv_bytes.len < 4) return error.BadShader;
-        if (binding_count == 0 or binding_count > MAX_BINDINGS) return error.InvalidArgument;
+        if (options.binding_count == 0 or options.binding_count > MAX_BINDINGS) return error.InvalidArgument;
+        if (options.push_constant_size > MAX_PUSH_CONSTANT_SIZE) return error.InvalidArgument;
+        if (options.push_constant_size % 4 != 0) return error.InvalidArgument;
+        const binding_count = options.binding_count;
+        const push_size = options.push_constant_size;
 
         // Copy into a u32-aligned buffer. vkCreateShaderModule's pCode requires
         // 4-byte alignment, but @embedFile returns a u8 slice aligned to 1.
@@ -71,10 +84,17 @@ pub const Pipeline = struct {
         );
         errdefer vk.vkDestroyDescriptorSetLayout(ctx.device, ds_layout, null);
 
+        const push_range: vk.VkPushConstantRange = .{
+            .stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = push_size,
+        };
         const pl_layout_info: vk.VkPipelineLayoutCreateInfo = .{
             .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
             .pSetLayouts = &ds_layout,
+            .pushConstantRangeCount = if (push_size > 0) 1 else 0,
+            .pPushConstantRanges = if (push_size > 0) &push_range else null,
         };
         var pl_layout: vk.VkPipelineLayout = undefined;
         try ctx_mod.check(
@@ -108,6 +128,7 @@ pub const Pipeline = struct {
             .pl_layout = pl_layout,
             .pipeline = pipeline,
             .binding_count = binding_count,
+            .push_constant_size = push_size,
         };
     }
 
@@ -122,6 +143,7 @@ pub const Pipeline = struct {
     /// Synchronous: records, submits, and waits for queue idle before returning.
     pub fn dispatch(self: *Pipeline, binds: []const BindEntry, options: DispatchOptions) !void {
         if (binds.len != self.binding_count) return error.InvalidArgument;
+        if (options.push.len != self.push_constant_size) return error.InvalidArgument;
         const ctx = self.ctx;
 
         const pool_size: vk.VkDescriptorPoolSize = .{
@@ -183,6 +205,16 @@ pub const Pipeline = struct {
         try ctx_mod.check(vk.vkBeginCommandBuffer(cmd, &begin_info), "vkBeginCommandBuffer");
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pipeline);
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pl_layout, 0, 1, &ds, 0, null);
+        if (options.push.len > 0) {
+            vk.vkCmdPushConstants(
+                cmd,
+                self.pl_layout,
+                vk.VK_SHADER_STAGE_COMPUTE_BIT,
+                0,
+                @intCast(options.push.len),
+                options.push.ptr,
+            );
+        }
         vk.vkCmdDispatch(cmd, options.groups[0], options.groups[1], options.groups[2]);
 
         const compute_to_host: vk.VkMemoryBarrier = .{

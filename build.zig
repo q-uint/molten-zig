@@ -70,14 +70,14 @@ pub const KernelArtifact = struct {
 };
 
 pub const CompileOptions = struct {
-    /// Files the kernel @imports - the build graph doesn't track these otherwise.
     extra_inputs: []const std.Build.LazyPath = &.{},
     /// Debug mode wraps integer ops in overflow checks; ReleaseFast skips them.
     optimize: std.builtin.OptimizeMode = .Debug,
-    /// Run spirv-val on the produced .spv and gate consumers on it succeeding.
-    /// Set false to skip validation - useful when iterating on the SPIR-V backend
-    /// itself and producing output that is not yet valid.
+    /// Set false to skip spirv-val. Useful when iterating on the SPIR-V backend.
     validate: bool = true,
+    /// Enable the variable_pointers SPIR-V feature. Required for indexing
+    /// runtime arrays (gpu.runtimeArray) in storage_buffer addrspace.
+    variable_pointers: bool = false,
 };
 
 /// Build helper for consumers: compile a .zig kernel to a .spv file using
@@ -114,6 +114,7 @@ pub fn compileKernel(
         "-fstrip",
         opt_flag,
     });
+    if (opts.variable_pointers) compile.addArg("-mcpu=generic+variable_pointers");
     compile.addFileArg(kernel_path);
     for (opts.extra_inputs) |path| compile.addFileInput(path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});

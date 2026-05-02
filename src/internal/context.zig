@@ -85,13 +85,13 @@ pub const Context = struct {
         };
         const dev_exts = [_][*c]const u8{vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME};
 
-        // The patched Zig SPIR-V backend declares Int8/Int16/Int64 capabilities
-        // unconditionally. Enable the matching device features so MoltenVK
-        // accepts the shader module without validation errors. Fail loudly if a
-        // device claims not to support them - on Apple Silicon they are always
-        // available via Metal.
+        // SPIR-V backend needs Int8/16/64; runtimeArray needs variablePointers.
+        var v11_features: vk.VkPhysicalDeviceVulkan11Features = .{
+            .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        };
         var v12_features: vk.VkPhysicalDeviceVulkan12Features = .{
             .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            .pNext = &v11_features,
         };
         var features2: vk.VkPhysicalDeviceFeatures2 = .{
             .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -100,17 +100,31 @@ pub const Context = struct {
         vk.vkGetPhysicalDeviceFeatures2(phys, &features2);
         if (features2.features.shaderInt64 == 0 or
             features2.features.shaderInt16 == 0 or
-            v12_features.shaderInt8 == 0)
+            v12_features.shaderInt8 == 0 or
+            v11_features.variablePointers == 0 or
+            v11_features.variablePointersStorageBuffer == 0)
         {
             std.debug.print(
-                "device missing required int features: int64={d} int16={d} int8={d}\n",
-                .{ features2.features.shaderInt64, features2.features.shaderInt16, v12_features.shaderInt8 },
+                "device missing required features: int64={d} int16={d} int8={d} varPtr={d} varPtrSB={d}\n",
+                .{
+                    features2.features.shaderInt64,
+                    features2.features.shaderInt16,
+                    v12_features.shaderInt8,
+                    v11_features.variablePointers,
+                    v11_features.variablePointersStorageBuffer,
+                },
             );
             return error.VulkanError;
         }
 
+        const enabled_v11: vk.VkPhysicalDeviceVulkan11Features = .{
+            .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+            .variablePointers = vk.VK_TRUE,
+            .variablePointersStorageBuffer = vk.VK_TRUE,
+        };
         const enabled_v12: vk.VkPhysicalDeviceVulkan12Features = .{
             .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            .pNext = @constCast(&enabled_v11),
             .shaderInt8 = vk.VK_TRUE,
         };
         const enabled_features: vk.VkPhysicalDeviceFeatures = .{
@@ -180,8 +194,8 @@ pub const Context = struct {
         return buffer.Buffer(T).init(self, count);
     }
 
-    pub fn loadPipeline(self: *Context, spv_bytes: []const u8, binding_count: u32) !pipeline.Pipeline {
-        return pipeline.Pipeline.init(self, spv_bytes, binding_count);
+    pub fn loadPipeline(self: *Context, spv_bytes: []const u8, options: pipeline.PipelineOptions) !pipeline.Pipeline {
+        return pipeline.Pipeline.init(self, spv_bytes, options);
     }
 };
 

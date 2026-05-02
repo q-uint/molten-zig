@@ -1,12 +1,3 @@
-// Specialised reduction kernel. T, op, tile, and workgroup_size are all
-// comptime - each instantiation is a distinct SPIR-V module with the
-// operation inlined, tile baked in, and LocalSize set per kernel.
-//
-// Each invocation reduces `tile` elements serially and writes one
-// partial. workgroup_size only affects how the dispatch is partitioned;
-// the kernel body doesn't read it (we don't have shared memory or
-// barriers). The host folds partials.
-
 const gpu = @import("std").gpu;
 
 pub const Op = enum {
@@ -20,12 +11,7 @@ pub const Op = enum {
 };
 
 fn isAssociative(comptime T: type, comptime op: Op) bool {
-    if (@typeInfo(T) == .float) {
-        // FP add/mul reorder across invocations, so the same input under
-        // different tile sizes produces different bit patterns. min/max
-        // are exact.
-        return op == .max or op == .min;
-    }
+    if (@typeInfo(T) == .float) return op == .max or op == .min;
     return true;
 }
 
@@ -46,18 +32,18 @@ fn identity(comptime T: type, comptime op: Op) T {
         },
         .min => switch (info) {
             .int => |i| if (i.signedness == .signed)
-                @as(T, (1 << (i.bits - 1)) - 1) // maxInt
+                @as(T, (1 << (i.bits - 1)) - 1)
             else
                 ~@as(T, 0),
-            .float => @as(T, 1.0) / @as(T, 0.0), // +inf
+            .float => @as(T, 1.0) / @as(T, 0.0),
             else => @compileError("min requires int or float T"),
         },
         .max => switch (info) {
             .int => |i| if (i.signedness == .signed)
-                @as(T, -(1 << (i.bits - 1))) // minInt
+                @as(T, -(1 << (i.bits - 1)))
             else
                 @as(T, 0),
-            .float => @as(T, -1.0) / @as(T, 0.0), // -inf
+            .float => @as(T, -1.0) / @as(T, 0.0),
             else => @compileError("max requires int or float T"),
         },
     };
@@ -75,25 +61,19 @@ fn apply(comptime T: type, comptime op: Op, a: T, b: T) T {
     };
 }
 
+pub const Push = extern struct { n: u32, tile: u32 };
+
 pub const Options = struct {
-    /// If false, refuses to instantiate non-associative reductions
-    /// (e.g. f32 + add). Opt in to acknowledge the rounding drift.
     allow_non_associative: bool = false,
 };
 
 pub fn Reduce(
     comptime T: type,
     comptime op: Op,
-    comptime tile: u32,
-    comptime n: u32,
     comptime workgroup_size: u32,
     comptime opts: Options,
 ) type {
-    if (tile == 0) @compileError("tile must be > 0");
-    if (n == 0 or n % tile != 0) @compileError("n must be a positive multiple of tile");
     if (workgroup_size == 0) @compileError("workgroup_size must be > 0");
-    if ((n / tile) % workgroup_size != 0)
-        @compileError("workgroup_size must divide n/tile (the partials count)");
     if (!validBitwise(T, op)) @compileError("bitwise ops require integer T");
     if (!isAssociative(T, op) and !opts.allow_non_associative) {
         @compileError(
@@ -102,28 +82,27 @@ pub fn Reduce(
                 " .allow_non_associative = true to acknowledge.",
         );
     }
-    const partials = n / tile;
 
     return struct {
-        const InBuf = extern struct { data: [n]T };
-        const OutBuf = extern struct { data: [partials]T };
-
-        const in_buf = gpu.storageBuffer(InBuf, 0, 0, "in_buf");
-        const out_buf = gpu.storageBuffer(OutBuf, 0, 1, "out_buf");
-
-        pub const groups: [3]u32 = .{ partials / workgroup_size, 1, 1 };
+        const in_buf = gpu.runtimeArray(T, 0, 0, "in_buf");
+        const out_buf = gpu.runtimeArray(T, 0, 1, "out_buf");
+        const push = gpu.pushConstant(Push, "push");
 
         pub fn main() callconv(.spirv_kernel) void {
             gpu.executionMode(main, .{
                 .local_size = .{ .x = workgroup_size, .y = 1, .z = 1 },
             });
 
+            const n = push.*.n;
+            const tile = push.*.tile;
+            const partials = n / tile;
             const gid = gpu.global_invocation_id[0];
             if (gid >= partials) return;
             const base = gid * tile;
 
             var acc: T = identity(T, op);
-            inline for (0..tile) |k| {
+            var k: u32 = 0;
+            while (k < tile) : (k += 1) {
                 acc = apply(T, op, acc, in_buf.*.data[base + k]);
             }
             out_buf.*.data[gid] = acc;

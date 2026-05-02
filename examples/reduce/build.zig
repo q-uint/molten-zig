@@ -28,29 +28,21 @@ pub fn build(b: *std.Build) !void {
     const kopts: molten_build.CompileOptions = .{
         .extra_inputs = &reduce_inputs,
         .optimize = .ReleaseFast,
+        .variable_pointers = true,
     };
     const sum_zig = molten_build.compileKernel(b, dep, "sum_zig", b.path("src/kernel_sum.zig"), kopts);
     const max_zig = molten_build.compileKernel(b, dep, "max_zig", b.path("src/kernel_max.zig"), kopts);
 
-    const sum_glsl = compileReduceGlsl(b, "sum_glsl", "uint", "((a)+(b))", "0u");
-    const max_glsl = compileReduceGlsl(b, "max_glsl", "int", "max(a,b)", "(-2147483648)");
-
     const installs = [_]*std.Build.Step{
         &b.addInstallFileWithDir(sum_zig.spv, .prefix, "sum_zig.spv").step,
         &b.addInstallFileWithDir(max_zig.spv, .prefix, "max_zig.spv").step,
-        &b.addInstallFileWithDir(sum_glsl.spv, .prefix, "sum_glsl.spv").step,
-        &b.addInstallFileWithDir(max_glsl.spv, .prefix, "max_glsl.spv").step,
     };
 
     const dis_step = b.step("dis", "Disassemble each .spv (raw and spirv-opt -O) into disassembly/");
     addDisassembly(b, dis_step, sum_zig.spv, "sum_zig.spv.dis", false);
     addDisassembly(b, dis_step, max_zig.spv, "max_zig.spv.dis", false);
-    addDisassembly(b, dis_step, sum_glsl.spv, "sum_glsl.spv.dis", false);
-    addDisassembly(b, dis_step, max_glsl.spv, "max_glsl.spv.dis", false);
     addDisassembly(b, dis_step, sum_zig.spv, "sum_zig.opt.spv.dis", true);
     addDisassembly(b, dis_step, max_zig.spv, "max_zig.opt.spv.dis", true);
-    addDisassembly(b, dis_step, sum_glsl.spv, "sum_glsl.opt.spv.dis", true);
-    addDisassembly(b, dis_step, max_glsl.spv, "max_glsl.opt.spv.dis", true);
 
     const run_sum = b.addRunArtifact(exe);
     run_sum.addFileArg(sum_zig.spv);
@@ -64,44 +56,12 @@ pub fn build(b: *std.Build) !void {
     const run_max_step = b.step("run-max", "Dispatch the Zig max kernel");
     run_max_step.dependOn(&run_max.step);
 
-    const run_sum_glsl = b.addRunArtifact(exe);
-    run_sum_glsl.addFileArg(sum_glsl.spv);
-    run_sum_glsl.addArg("sum");
-    const run_sum_glsl_step = b.step("run-sum-glsl", "Dispatch the GLSL sum kernel");
-    run_sum_glsl_step.dependOn(&run_sum_glsl.step);
-
-    const run_max_glsl = b.addRunArtifact(exe);
-    run_max_glsl.addFileArg(max_glsl.spv);
-    run_max_glsl.addArg("max");
-    const run_max_glsl_step = b.step("run-max-glsl", "Dispatch the GLSL max kernel");
-    run_max_glsl_step.dependOn(&run_max_glsl.step);
-
     const all = b.step("all", "Dispatch every kernel");
     all.dependOn(&run_sum.step);
     all.dependOn(&run_max.step);
-    all.dependOn(&run_sum_glsl.step);
-    all.dependOn(&run_max_glsl.step);
 
     b.default_step.dependOn(&exe.step);
     for (installs) |s| b.default_step.dependOn(s);
-}
-
-fn compileReduceGlsl(
-    b: *std.Build,
-    name: []const u8,
-    comptime T: []const u8,
-    comptime op_macro: []const u8,
-    comptime identity: []const u8,
-) molten_build.KernelArtifact {
-    const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });
-    glsl.addArg("-DT=" ++ T);
-    glsl.addArg("-DOP(a,b)=" ++ op_macro);
-    glsl.addArg("-DIDENTITY=" ++ identity);
-    glsl.addFileArg(b.path("src/shader.comp"));
-    glsl.addArg("-o");
-    const out_name = b.fmt("{s}.spv", .{name});
-    const raw_spv = glsl.addOutputFileArg(out_name);
-    return .{ .spv = molten_build.validateSpv(b, raw_spv, out_name) };
 }
 
 fn addDisassembly(

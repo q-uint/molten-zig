@@ -1,17 +1,10 @@
 // Usage: ./reduce <kernel.spv> <sum|max>
-//
-// Each invocation reduces TILE input elements; the host folds the
-// per-invocation partials. Picking sum or max only changes the host-side
-// reference computation - the kernel decides what the operation is.
 
 const std = @import("std");
 const molten = @import("molten");
 
-const N: u32 = 1 << 14;
-const TILE: u32 = 64;
-const PARTIALS: u32 = N / TILE;
-// Must match the workgroup_size baked into the kernel via gpu.executionMode.
 const WORKGROUP_SIZE: u32 = 64;
+const Push = extern struct { n: u32, tile: u32 };
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -30,56 +23,59 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("device: {s}\n", .{ctx.deviceName()});
 
     if (std.mem.eql(u8, op_arg, "sum")) {
-        try runSum(alloc, &ctx, spv);
+        try runSum(alloc, &ctx, spv, 1 << 14, 64);
+        try runSum(alloc, &ctx, spv, 1 << 16, 128);
     } else if (std.mem.eql(u8, op_arg, "max")) {
-        try runMax(alloc, &ctx, spv);
+        try runMax(alloc, &ctx, spv, 1 << 14, 64);
+        try runMax(alloc, &ctx, spv, 1 << 16, 128);
     } else {
         return error.BadArgs;
     }
 }
 
-fn runSum(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8) !void {
-    var input: [N]u32 = undefined;
+fn runSum(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u32, tile: u32) !void {
+    const input = try alloc.alloc(u32, n);
+    defer alloc.free(input);
     var expected: u64 = 0;
-    for (0..N) |i| {
-        input[i] = @intCast(i & 0xff);
-        expected += input[i];
+    for (input, 0..) |*p, i| {
+        p.* = @intCast(i & 0xff);
+        expected += p.*;
     }
 
-    const partials = try dispatch(u32, alloc, ctx, spv, &input);
+    const partials = try dispatch(u32, alloc, ctx, spv, input, tile);
     defer alloc.free(partials);
 
     var got: u64 = 0;
     for (partials) |p| got += p;
 
     if (got != expected) {
-        std.debug.print("sum mismatch: got {d} want {d}\n", .{ got, expected });
+        std.debug.print("sum mismatch (n={d} tile={d}): got {d} want {d}\n", .{ n, tile, got, expected });
         return error.WrongResult;
     }
-    std.debug.print("ok: reduce sum u32 -> {d}\n", .{got});
+    std.debug.print("ok: reduce sum u32 n={d} tile={d} -> {d}\n", .{ n, tile, got });
 }
 
-fn runMax(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8) !void {
-    var input: [N]i32 = undefined;
+fn runMax(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u32, tile: u32) !void {
+    const input = try alloc.alloc(i32, n);
+    defer alloc.free(input);
     var expected: i32 = std.math.minInt(i32);
-    for (0..N) |i| {
-        // Mix sign so the i32 minInt identity actually matters.
+    for (input, 0..) |*p, i| {
         const v: i32 = @as(i32, @intCast(i & 0x7f)) - 64;
-        input[i] = v;
+        p.* = v;
         expected = @max(expected, v);
     }
 
-    const partials = try dispatch(i32, alloc, ctx, spv, &input);
+    const partials = try dispatch(i32, alloc, ctx, spv, input, tile);
     defer alloc.free(partials);
 
     var got: i32 = std.math.minInt(i32);
     for (partials) |p| got = @max(got, p);
 
     if (got != expected) {
-        std.debug.print("max mismatch: got {d} want {d}\n", .{ got, expected });
+        std.debug.print("max mismatch (n={d} tile={d}): got {d} want {d}\n", .{ n, tile, got, expected });
         return error.WrongResult;
     }
-    std.debug.print("ok: reduce max i32 -> {d}\n", .{got});
+    std.debug.print("ok: reduce max i32 n={d} tile={d} -> {d}\n", .{ n, tile, got });
 }
 
 fn dispatch(
@@ -88,17 +84,31 @@ fn dispatch(
     ctx: *molten.Context,
     spv: []const u8,
     input: []const T,
+    tile: u32,
 ) ![]T {
+    const n: u32 = @intCast(input.len);
+    if (n % tile != 0) return error.InvalidArgument;
+    const partials = n / tile;
+    if (partials % WORKGROUP_SIZE != 0) return error.InvalidArgument;
+
     var in = try ctx.createBuffer(T, input.len);
     defer in.deinit();
-    var out = try ctx.createBuffer(T, PARTIALS);
+    var out = try ctx.createBuffer(T, partials);
     defer out.deinit();
 
     try in.write(input);
 
-    var pipeline = try ctx.loadPipeline(spv, 2);
+    var pipeline = try ctx.loadPipeline(spv, .{
+        .binding_count = 2,
+        .push_constant_size = @sizeOf(Push),
+    });
     defer pipeline.deinit();
-    try pipeline.dispatch(&.{ in.bind(), out.bind() }, .{ .groups = .{ PARTIALS / WORKGROUP_SIZE, 1, 1 } });
+
+    const push = Push{ .n = n, .tile = tile };
+    try pipeline.dispatch(&.{ in.bind(), out.bind() }, .{
+        .groups = .{ partials / WORKGROUP_SIZE, 1, 1 },
+        .push = std.mem.asBytes(&push),
+    });
 
     return try out.read(alloc);
 }

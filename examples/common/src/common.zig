@@ -74,7 +74,7 @@ pub fn run(
 
     try in.write(cfg.input);
 
-    var pipeline = try ctx.loadPipeline(spv, cfg.binding_count);
+    var pipeline = try ctx.loadPipeline(spv, .{ .binding_count = cfg.binding_count });
     defer pipeline.deinit();
     try pipeline.dispatch(&.{ in.bind(), out.bind() }, .{ .groups = cfg.groups });
 

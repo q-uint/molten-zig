@@ -7,6 +7,7 @@ const pipeline = @import("internal/pipeline.zig");
 pub const Context = context.Context;
 pub const Buffer = buffer.Buffer;
 pub const Pipeline = pipeline.Pipeline;
+pub const PipelineOptions = pipeline.PipelineOptions;
 pub const DispatchOptions = pipeline.DispatchOptions;
 
 pub const Error = error{
