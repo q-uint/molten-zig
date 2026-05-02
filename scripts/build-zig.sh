@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # First-time build of the patched zig from vendor/zig.
-# Run inside `nix develop .#zig-dev`.
+# Run inside `nix develop`.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -8,7 +8,7 @@ ZIGDIR="$PWD/vendor/zig"
 BUILD="$ZIGDIR/build"
 
 if ! command -v cmake >/dev/null || ! command -v ninja >/dev/null; then
-  echo "error: cmake or ninja missing - run inside: nix develop .#zig-dev"
+  echo "error: cmake or ninja missing - run inside: nix develop"
   exit 1
 fi
 

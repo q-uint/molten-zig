@@ -1,5 +1,5 @@
-// Smoke probe for the patched Zig SPIR-V backend.
-// Build: `zig build-obj probe.zig -target spirv64-vulkan -fno-llvm -fno-lld`.
+// Element-wise multiply by 2 over a buffer of f32.
+// Build: `zig build-obj kernel.zig -target spirv64-vulkan -fno-llvm -fno-lld`.
 
 // No @import("std"): std materialises std.builtin.cpu with pointer-typed
 // fields, which spirv-val rejects under the Logical addressing model. Use

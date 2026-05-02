@@ -9,24 +9,6 @@
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
 
-      # Pinned zig 0.16.0 binary for the default shell.
-      zigBin = pkgs.stdenvNoCC.mkDerivation {
-        pname = "zig";
-        version = "0.16.0";
-        src = pkgs.fetchurl {
-          url = "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz";
-          sha256 = "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489";
-        };
-        dontConfigure = true;
-        dontBuild = true;
-        dontFixup = true;
-        installPhase = ''
-          mkdir -p $out/bin $out/lib
-          cp -r lib/* $out/lib/
-          cp zig $out/bin/zig
-        '';
-      };
-
       # Runtime: loader uses these to find the MoltenVK ICD and validation layers.
       vulkanRuntimeEnv = {
         VK_ICD_FILENAMES = "${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
@@ -51,67 +33,62 @@
         pkgs.glslang
       ];
 
-      versionBanner = zigPkg: ''
-        if [ -t 1 ]; then
-          echo "zig                $(${zigPkg}/bin/zig version 2>/dev/null || echo "(not built yet - run: ./scripts/build-zig.sh)")"
-          echo "vulkan-loader      ${pkgs.vulkan-loader.version}"
-          echo "vulkan-headers     ${pkgs.vulkan-headers.version}"
-          echo "validation-layers  ${pkgs.vulkan-validation-layers.version}"
-          echo "moltenvk           ${pkgs.moltenvk.version}"
-          echo "spirv-tools        ${pkgs.spirv-tools.version}"
-          echo "glslang            ${pkgs.glslang.version}"
-        fi
-      '';
+      # Single shell: LLVM/cmake/ninja to build the patched vendor/zig, plus
+      # the Vulkan stack. The patched zig (once built) handles both host and
+      # kernel builds, so there's no separate "user" shell. cmake builds zig
+      # from the bundled zig2.c, so we don't need a bootstrap zig on PATH.
+      moltenShell = pkgs.mkShell (
+        vulkanEnv
+        // {
+          buildInputs = vulkanInputs ++ [
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.llvmPackages_22.llvm.dev
+            pkgs.llvmPackages_22.lld
+            pkgs.llvmPackages_22.libclang
+            pkgs.libxml2
+            pkgs.zlib
+          ];
+
+          shellHook = ''
+            # Walk up from $PWD looking for the flake root (so the shell works
+            # whether you ran `nix develop` from the repo root or a subdir).
+            # We track the working tree, not the immutable /nix/store copy.
+            __molten_root="$PWD"
+            while [ "$__molten_root" != "/" ] && [ ! -f "$__molten_root/flake.nix" ]; do
+              __molten_root="$(dirname "$__molten_root")"
+            done
+            if [ -f "$__molten_root/flake.nix" ]; then
+              PATCHED_ZIG_BIN="$__molten_root/vendor/zig/build/stage3/bin"
+              if [ -x "$PATCHED_ZIG_BIN/zig" ]; then
+                export PATH="$PATCHED_ZIG_BIN:$PATH"
+              fi
+            fi
+            unset __molten_root
+
+            if [ -t 1 ]; then
+              echo "=== molten-zig dev shell ==="
+              if [ -n "''${PATCHED_ZIG_BIN:-}" ] && [ -x "$PATCHED_ZIG_BIN/zig" ]; then
+                echo "zig               $PATCHED_ZIG_BIN/zig ($($PATCHED_ZIG_BIN/zig version))"
+              else
+                echo "zig               not built yet - run scripts/build-zig.sh"
+              fi
+              echo "vulkan-loader     ${pkgs.vulkan-loader.version}"
+              echo "moltenvk          ${pkgs.moltenvk.version}"
+              echo "spirv-tools       ${pkgs.spirv-tools.version}"
+              echo "glslang           ${pkgs.glslang.version}"
+              echo "llvm              ${pkgs.llvmPackages_22.llvm.version}"
+            fi
+          '';
+        }
+      );
     in
     {
       formatter.${system} = pkgs.nixfmt;
 
       devShells.${system} = {
-        # Default shell: prebuilt zig 0.16.0, no LLVM toolchain.
-        default = pkgs.mkShell (
-          vulkanEnv
-          // {
-            buildInputs = [ zigBin ] ++ vulkanInputs;
-            shellHook = versionBanner zigBin;
-          }
-        );
-
-        # zig-dev shell: toolchain to build the patched zig from vendor/zig.
-        # Run scripts/build-zig.sh inside this shell.
-        zig-dev = pkgs.mkShell (
-          vulkanEnv
-          // {
-            buildInputs = vulkanInputs ++ [
-              zigBin # bootstrap compiler
-              pkgs.cmake
-              pkgs.ninja
-              pkgs.llvmPackages_22.llvm.dev
-              pkgs.llvmPackages_22.lld
-              pkgs.llvmPackages_22.libclang
-              pkgs.libxml2
-              pkgs.zlib
-            ];
-
-            shellHook = ''
-              # Resolved against $PWD so it tracks the working tree, not /nix/store.
-              export PATCHED_ZIG="$PWD/vendor/zig/build/stage3/bin/zig"
-              if [ -t 1 ]; then
-                echo "=== molten-zig zig-dev shell ==="
-                echo "bootstrap zig (0.16.0): ${zigBin}/bin/zig"
-                if [ -x "$PATCHED_ZIG" ]; then
-                  echo "patched zig:            $PATCHED_ZIG ($($PATCHED_ZIG version))"
-                else
-                  echo "patched zig:            not built yet - run scripts/build-zig.sh"
-                fi
-                echo "vulkan-loader      ${pkgs.vulkan-loader.version}"
-                echo "moltenvk           ${pkgs.moltenvk.version}"
-                echo "spirv-tools        ${pkgs.spirv-tools.version}"
-                echo "glslang            ${pkgs.glslang.version}"
-                echo "llvm               ${pkgs.llvmPackages_22.llvm.version}"
-              fi
-            '';
-          }
-        );
+        default = moltenShell;
+        zig-dev = moltenShell; # kept for back-compat with `nix develop .#zig-dev`
       };
     };
 }

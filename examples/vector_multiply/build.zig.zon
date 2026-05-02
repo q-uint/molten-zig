@@ -1,0 +1,15 @@
+.{
+    .name = .vector_multiply,
+    .version = "0.0.0",
+    .fingerprint = 0x8791a7381799b85b,
+    .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
+    .dependencies = .{
+        .molten = .{ .path = "../.." },
+        .common = .{ .path = "../common" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

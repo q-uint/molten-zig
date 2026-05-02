@@ -1,0 +1,15 @@
+.{
+    .name = .matrix_transpose,
+    .version = "0.0.0",
+    .fingerprint = 0x4412f3c8f0af9cc6,
+    .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
+    .dependencies = .{
+        .molten = .{ .path = "../.." },
+        .common = .{ .path = "../common" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
