@@ -108,14 +108,8 @@ pub fn Reduce(
         const InBuf = extern struct { data: [n]T };
         const OutBuf = extern struct { data: [partials]T };
 
-        const in_buf = @extern(*addrspace(.storage_buffer) InBuf, .{
-            .name = "in_buf",
-            .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } },
-        });
-        const out_buf = @extern(*addrspace(.storage_buffer) OutBuf, .{
-            .name = "out_buf",
-            .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } },
-        });
+        const in_buf = gpu.storageBuffer(InBuf, 0, 0, "in_buf");
+        const out_buf = gpu.storageBuffer(OutBuf, 0, 1, "out_buf");
 
         pub const groups: [3]u32 = .{ partials / workgroup_size, 1, 1 };
 

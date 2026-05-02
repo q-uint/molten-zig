@@ -1,0 +1,10 @@
+.{
+    .name = .spirv_smoke,
+    .version = "0.0.0",
+    .fingerprint = 0x19bfe0c0a166f252,
+    .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
+    .dependencies = .{
+        .molten = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

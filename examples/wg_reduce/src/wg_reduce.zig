@@ -96,14 +96,8 @@ pub fn WgReduce(
         const InBuf = extern struct { data: [n]T };
         const OutBuf = extern struct { data: [1]T };
 
-        const in_buf = @extern(*addrspace(.storage_buffer) InBuf, .{
-            .name = "in_buf",
-            .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } },
-        });
-        const out_buf = @extern(*addrspace(.storage_buffer) OutBuf, .{
-            .name = "out_buf",
-            .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } },
-        });
+        const in_buf = gpu.storageBuffer(InBuf, 0, 0, "in_buf");
+        const out_buf = gpu.storageBuffer(OutBuf, 0, 1, "out_buf");
 
         var scratch: [workgroup_size]T addrspace(.shared) = undefined;
 

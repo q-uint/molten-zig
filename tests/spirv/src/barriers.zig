@@ -1,16 +1,8 @@
-// Compile-only smoke test for std.gpu barrier primitives. Not dispatched;
-// the build wires it into spirv-val so any breakage in the asm templates
-// or operand encoding for OpControlBarrier / OpMemoryBarrier fails the
-// build before it can reach a downstream user.
-
 const gpu = @import("std").gpu;
 
 const Buf = extern struct { data: [1]u32 };
 
-const buf = @extern(*addrspace(.storage_buffer) Buf, .{
-    .name = "buf",
-    .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } },
-});
+const buf = gpu.storageBuffer(Buf, 0, 0, "buf");
 
 var scratch: [1]u32 addrspace(.shared) = undefined;
 

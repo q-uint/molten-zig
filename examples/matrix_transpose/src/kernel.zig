@@ -6,14 +6,8 @@ const gpu = @import("std").gpu;
 const N = 64;
 const Buf = extern struct { data: [N * N]f32 };
 
-const in_buf = @extern(*addrspace(.storage_buffer) Buf, .{
-    .name = "in_buf",
-    .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } },
-});
-const out_buf = @extern(*addrspace(.storage_buffer) Buf, .{
-    .name = "out_buf",
-    .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } },
-});
+const in_buf = gpu.storageBuffer(Buf, 0, 0, "in_buf");
+const out_buf = gpu.storageBuffer(Buf, 0, 1, "out_buf");
 
 export fn main() callconv(.spirv_kernel) void {
     const x = gpu.global_invocation_id[0];

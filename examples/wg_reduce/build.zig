@@ -25,25 +25,12 @@ pub fn build(b: *std.Build) !void {
     const sum_zig = molten_build.compileKernel(b, dep, "sum_zig", b.path("src/kernel_sum.zig"), kopts);
     const max_zig = molten_build.compileKernel(b, dep, "max_zig", b.path("src/kernel_max.zig"), kopts);
 
-    // Compile-only smoke test for the std.gpu barrier primitives that
-    // wg_reduce itself doesn't exercise (controlBarrier with explicit
-    // scopes, memoryBarrier). spirv-val gates the build on it staying
-    // valid; no dispatch.
-    const barriers_smoke = molten_build.compileKernel(
-        b,
-        dep,
-        "barriers_smoke",
-        b.path("src/kernel_barriers_smoke.zig"),
-        .{ .optimize = .ReleaseFast },
-    );
-
     const sum_glsl = compileWgGlsl(b, "sum_glsl", "uint", "((a)+(b))", "0u");
     const max_glsl = compileWgGlsl(b, "max_glsl", "int", "max(a,b)", "(-2147483648)");
 
     const installs = [_]*std.Build.Step{
         &b.addInstallFileWithDir(sum_zig.spv, .prefix, "sum_zig.spv").step,
         &b.addInstallFileWithDir(max_zig.spv, .prefix, "max_zig.spv").step,
-        &b.addInstallFileWithDir(barriers_smoke.spv, .prefix, "barriers_smoke.spv").step,
         &b.addInstallFileWithDir(sum_glsl.spv, .prefix, "sum_glsl.spv").step,
         &b.addInstallFileWithDir(max_glsl.spv, .prefix, "max_glsl.spv").step,
     };
@@ -51,7 +38,6 @@ pub fn build(b: *std.Build) !void {
     const dis_step = b.step("dis", "Disassemble each .spv (raw and spirv-opt -O) into disassembly/");
     addDisassembly(b, dis_step, sum_zig.spv, "sum_zig.spv.dis", false);
     addDisassembly(b, dis_step, max_zig.spv, "max_zig.spv.dis", false);
-    addDisassembly(b, dis_step, barriers_smoke.spv, "barriers_smoke.spv.dis", false);
     addDisassembly(b, dis_step, sum_glsl.spv, "sum_glsl.spv.dis", false);
     addDisassembly(b, dis_step, max_glsl.spv, "max_glsl.spv.dis", false);
     addDisassembly(b, dis_step, sum_zig.spv, "sum_zig.opt.spv.dis", true);
