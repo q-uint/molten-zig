@@ -78,6 +78,10 @@ zig build all                   # validate both kernels, dispatch both through M
 
 `build all` runs the example twice: once with the GLSL-derived `.spv` (the parity baseline), once with the Zig-derived `.spv`. Both must produce element-wise `2x` output.
 
+## Kernel target
+
+Kernels default to `spirv32-vulkan`. GLSL/Vulkan compute is 32-bit by convention and MoltenVK targets a 32-bit Metal model; spirv64 just makes Sema coerce every index to `u64` and emit pointless widening. Switch via `CompileOptions.target_bits = .@"64"` for buffer device addresses or 64-bit atomics.
+
 ## API surface
 
 - `Context` - device/queue setup, buffer + pipeline factories, submission entry points (`submit`, `submitToFrame`).

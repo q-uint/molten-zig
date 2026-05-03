@@ -1,0 +1,53 @@
+#version 450
+
+// Tiled GEMM: C = A * B, all row-major, all f32.
+// Workgroup is one TILE x TILE output tile; one thread per output element.
+// K is iterated in TILE-sized chunks loaded into shared memory.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+const uint TILE = 16;
+
+layout(set = 0, binding = 0) readonly buffer A_buf { float data[]; } A;
+layout(set = 0, binding = 1) readonly buffer B_buf { float data[]; } B;
+layout(set = 0, binding = 2)          buffer C_buf { float data[]; } C;
+
+layout(push_constant) uniform Push {
+    uint M;
+    uint N;
+    uint K;
+} push;
+
+shared float A_tile[TILE][TILE];
+shared float B_tile[TILE][TILE];
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+    uint lr  = gl_LocalInvocationID.y;
+    uint lc  = gl_LocalInvocationID.x;
+
+    float acc = 0.0;
+    uint num_tiles = (push.K + TILE - 1) / TILE;
+    for (uint t = 0; t < num_tiles; t++) {
+        uint a_col = t * TILE + lc;
+        uint b_row = t * TILE + lr;
+
+        A_tile[lr][lc] = (row < push.M && a_col < push.K)
+            ? A.data[row * push.K + a_col]
+            : 0.0;
+        B_tile[lr][lc] = (b_row < push.K && col < push.N)
+            ? B.data[b_row * push.N + col]
+            : 0.0;
+        barrier();
+
+        for (uint k = 0; k < TILE; k++) {
+            acc += A_tile[lr][k] * B_tile[k][lc];
+        }
+        barrier();
+    }
+
+    if (row < push.M && col < push.N) {
+        C.data[row * push.N + col] = acc;
+    }
+}

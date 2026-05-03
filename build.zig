@@ -96,6 +96,8 @@ pub const KernelImport = struct {
     path: std.Build.LazyPath,
 };
 
+pub const TargetBits = enum { @"32", @"64" };
+
 pub const CompileOptions = struct {
     /// Named modules importable from the kernel via `@import("<name>")`.
     /// The kernel compile is a raw `zig build-obj`, so it does not see the
@@ -109,6 +111,10 @@ pub const CompileOptions = struct {
     /// Enable the variable_pointers SPIR-V feature. Required for indexing
     /// runtime arrays (gpu.runtimeArray) in storage_buffer addrspace.
     variable_pointers: bool = false,
+    /// Pointer/usize width. Defaults to 32 because GLSL/Vulkan compute is
+    /// 32-bit by convention and MoltenVK lowers to a 32-bit Metal model.
+    /// Switch to .@"64" for buffer device addresses or 64-bit atomics.
+    target_bits: TargetBits = .@"32",
 };
 
 /// Build helper for consumers: compile a .zig kernel to a .spv file using
@@ -132,11 +138,15 @@ pub fn compileKernel(
         .ReleaseFast => "-OReleaseFast",
         .ReleaseSmall => "-OReleaseSmall",
     };
+    const target = switch (opts.target_bits) {
+        .@"32" => "spirv32-vulkan",
+        .@"64" => "spirv64-vulkan",
+    };
     const compile = b.addSystemCommand(&.{
         patched_zig,
         "build-obj",
         "-target",
-        "spirv64-vulkan",
+        target,
         "-fno-llvm",
         "-fno-lld",
         // Without -fstrip the SPIR-V module carries the full mangled

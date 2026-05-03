@@ -30,6 +30,7 @@
         pkgs.vulkan-tools
         pkgs.moltenvk
         pkgs.spirv-tools
+        pkgs.spirv-cross
         pkgs.glslang
       ];
 
@@ -76,6 +77,7 @@
               echo "vulkan-loader     ${pkgs.vulkan-loader.version}"
               echo "moltenvk          ${pkgs.moltenvk.version}"
               echo "spirv-tools       ${pkgs.spirv-tools.version}"
+              echo "spirv-cross       ${pkgs.spirv-cross.version}"
               echo "glslang           ${pkgs.glslang.version}"
               echo "llvm              ${pkgs.llvmPackages_22.llvm.version}"
             fi
