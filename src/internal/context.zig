@@ -13,30 +13,32 @@ const MAX_SEMAPHORES: u32 = molten.options.max_semaphores_per_submit;
 
 pub const SemaphoreWait = struct {
     semaphore: *cmd_mod.Semaphore,
-    /// Pipeline stage at which the wait takes effect. Use a constant from
-    /// `molten.PipelineStage` (e.g. `.compute_shader` for a dispatch that
-    /// consumes results signaled by a previous dispatch).
     stage: cmd_mod.PipelineStageFlags,
+};
+
+pub const TimelineWait = struct {
+    timeline: *cmd_mod.Timeline,
+    value: u64,
+    stage: cmd_mod.PipelineStageFlags,
+};
+
+pub const TimelineSignal = struct {
+    timeline: *cmd_mod.Timeline,
+    value: u64,
 };
 
 pub const SubmitOptions = struct {
     cmd: *const cmd_mod.CommandBuffer,
-    /// Semaphores to wait on before this submit's work begins (each at
-    /// its own pipeline stage).
     waits: []const SemaphoreWait = &.{},
-    /// Semaphores to signal once this submit's work completes.
     signals: []const *cmd_mod.Semaphore = &.{},
-    /// Optional fence signaled when the submit completes. Pass one to
-    /// let the host wait without vkQueueWaitIdle.
+    timeline_waits: []const TimelineWait = &.{},
+    timeline_signals: []const TimelineSignal = &.{},
     fence: ?*cmd_mod.Fence = null,
 };
 
 pub const Options = struct {
     app_name: [:0]const u8 = "molten-zig",
     enable_validation_if_available: bool = true,
-    /// Optional sink for the most recent failing Vulkan call. The pointer
-    /// must outlive the Context. Library code never writes to stderr; if
-    /// you want a record of which call failed, pass one here.
     diagnostics: ?*Diagnostics = null,
 };
 
@@ -92,7 +94,6 @@ pub const Context = struct {
         const phys_devs = try allocator.alloc(vk.VkPhysicalDevice, phys_count);
         defer allocator.free(phys_devs);
         try check(diag, vk.vkEnumeratePhysicalDevices(instance, &phys_count, phys_devs.ptr), "vkEnumeratePhysicalDevices(list)");
-        // MoltenVK exposes exactly one device on Apple Silicon.
         const phys = phys_devs[0];
 
         var qf_count: u32 = 0;
@@ -135,6 +136,7 @@ pub const Context = struct {
         if (features2.features.shaderInt64 == 0 or
             features2.features.shaderInt16 == 0 or
             v12_features.shaderInt8 == 0 or
+            v12_features.timelineSemaphore == 0 or
             v11_features.variablePointers == 0 or
             v11_features.variablePointersStorageBuffer == 0)
         {
@@ -150,6 +152,7 @@ pub const Context = struct {
             .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
             .pNext = @constCast(&enabled_v11),
             .shaderInt8 = vk.VK_TRUE,
+            .timelineSemaphore = vk.VK_TRUE,
         };
         const enabled_features: vk.VkPhysicalDeviceFeatures = .{
             .shaderInt64 = vk.VK_TRUE,
@@ -224,33 +227,64 @@ pub const Context = struct {
     }
 
     pub fn submit(self: *Context, options: SubmitOptions) !void {
-        if (options.waits.len > MAX_SEMAPHORES or options.signals.len > MAX_SEMAPHORES)
+        const wait_total = options.waits.len + options.timeline_waits.len;
+        const signal_total = options.signals.len + options.timeline_signals.len;
+        if (wait_total > MAX_SEMAPHORES or signal_total > MAX_SEMAPHORES)
             return error.TooManySemaphores;
 
+        // Binary entries first, then timeline. Vulkan ignores values for binary slots.
         var wait_handles: [MAX_SEMAPHORES]vk.VkSemaphore = undefined;
         var wait_stages: [MAX_SEMAPHORES]vk.VkPipelineStageFlags = undefined;
+        var wait_values: [MAX_SEMAPHORES]u64 = undefined;
         for (options.waits, 0..) |w, i| {
             std.debug.assert(w.semaphore.ctx == self);
             wait_handles[i] = w.semaphore.handle;
             wait_stages[i] = w.stage;
+            wait_values[i] = 0;
         }
+        for (options.timeline_waits, 0..) |w, j| {
+            std.debug.assert(w.timeline.ctx == self);
+            const i = options.waits.len + j;
+            wait_handles[i] = w.timeline.handle;
+            wait_stages[i] = w.stage;
+            wait_values[i] = w.value;
+        }
+
         var signal_handles: [MAX_SEMAPHORES]vk.VkSemaphore = undefined;
+        var signal_values: [MAX_SEMAPHORES]u64 = undefined;
         for (options.signals, 0..) |s, i| {
             std.debug.assert(s.ctx == self);
             signal_handles[i] = s.handle;
+            signal_values[i] = 0;
         }
+        for (options.timeline_signals, 0..) |s, j| {
+            std.debug.assert(s.timeline.ctx == self);
+            const i = options.signals.len + j;
+            signal_handles[i] = s.timeline.handle;
+            signal_values[i] = s.value;
+        }
+
+        const has_timeline = options.timeline_waits.len > 0 or options.timeline_signals.len > 0;
+        const timeline_info: vk.VkTimelineSemaphoreSubmitInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .waitSemaphoreValueCount = @intCast(wait_total),
+            .pWaitSemaphoreValues = if (wait_total > 0) &wait_values else null,
+            .signalSemaphoreValueCount = @intCast(signal_total),
+            .pSignalSemaphoreValues = if (signal_total > 0) &signal_values else null,
+        };
 
         std.debug.assert(options.cmd.ctx == self);
         const cmd_handle = options.cmd.handle;
         const submit_info: vk.VkSubmitInfo = .{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .waitSemaphoreCount = @intCast(options.waits.len),
-            .pWaitSemaphores = if (options.waits.len > 0) &wait_handles else null,
-            .pWaitDstStageMask = if (options.waits.len > 0) &wait_stages else null,
+            .pNext = if (has_timeline) &timeline_info else null,
+            .waitSemaphoreCount = @intCast(wait_total),
+            .pWaitSemaphores = if (wait_total > 0) &wait_handles else null,
+            .pWaitDstStageMask = if (wait_total > 0) &wait_stages else null,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd_handle,
-            .signalSemaphoreCount = @intCast(options.signals.len),
-            .pSignalSemaphores = if (options.signals.len > 0) &signal_handles else null,
+            .signalSemaphoreCount = @intCast(signal_total),
+            .pSignalSemaphores = if (signal_total > 0) &signal_handles else null,
         };
         const fence: vk.VkFence = if (options.fence) |f| f.handle else null;
         try check(self.diag, vk.vkQueueSubmit(self.queue, 1, &submit_info, fence), "vkQueueSubmit");

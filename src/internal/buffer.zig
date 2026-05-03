@@ -72,8 +72,7 @@ pub fn Buffer(comptime T: type) type {
                 "vkMapMemory(write)",
             );
             defer vk.vkUnmapMemory(self.ctx.device, self.memory);
-            // vkMapMemory is only spec-guaranteed to align to
-            // minMemoryMapAlignment (>= 64). Anything stricter is on us.
+            // vkMapMemory only guarantees minMemoryMapAlignment (>= 64).
             std.debug.assert(@intFromPtr(ptr.?) % @alignOf(T) == 0);
             const dst: [*]T = @ptrCast(@alignCast(ptr.?));
             @memcpy(dst[0..data.len], data);
@@ -83,8 +82,6 @@ pub fn Buffer(comptime T: type) type {
             return .{ .ctx = self.ctx, .handle = self.handle, .size = self.size };
         }
 
-        /// Copy the buffer contents into `dst`. `dst.len` must equal `count`.
-        /// Useful when the caller already owns a destination slice.
         pub fn readInto(self: *Self, dst: []T) !void {
             if (dst.len != self.count) return error.InvalidArgument;
             var ptr: ?*anyopaque = null;

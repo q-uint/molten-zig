@@ -5,9 +5,6 @@ const Context = ctx_mod.Context;
 
 pub const PipelineStageFlags = vk.VkPipelineStageFlags;
 
-/// Re-exports of the Vulkan pipeline stage bits relevant to compute work.
-/// Used as the `stage` field of SemaphoreWait so callers do not have to
-/// reach into the raw C bindings for a single constant.
 pub const PipelineStage = struct {
     pub const top_of_pipe: PipelineStageFlags = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     pub const compute_shader: PipelineStageFlags = vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -16,10 +13,6 @@ pub const PipelineStage = struct {
     pub const all_commands: PipelineStageFlags = vk.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 };
 
-/// Caller-owned, re-recordable command buffer. Allocated from the
-/// context's command pool. Use begin/end to record, reset to clear,
-/// and Context.submit to send to the queue. No implicit barriers, the
-/// caller decides when work is compute->compute or compute->host.
 pub const CommandBuffer = struct {
     ctx: *Context,
     handle: vk.VkCommandBuffer,
@@ -64,7 +57,6 @@ pub const CommandBuffer = struct {
         );
     }
 
-    /// shader-write -> shader-read across compute dispatches.
     pub fn barrierComputeToCompute(self: *CommandBuffer) void {
         const mb: vk.VkMemoryBarrier = .{
             .sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -85,8 +77,7 @@ pub const CommandBuffer = struct {
         );
     }
 
-    /// shader-write -> host-read. Required before host-mapped reads of
-    /// buffers written by a dispatch.
+    /// Required before host-mapped reads of buffers written by a dispatch.
     pub fn barrierComputeToHost(self: *CommandBuffer) void {
         const mb: vk.VkMemoryBarrier = .{
             .sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -108,10 +99,6 @@ pub const CommandBuffer = struct {
     }
 };
 
-/// Binary semaphore. Used to order GPU work between submissions on the
-/// same queue, or across queues, without round-tripping the host. A
-/// semaphore is signaled by one submit and waited on by another; pair
-/// each wait with a pipeline stage at which the wait takes effect.
 pub const Semaphore = struct {
     ctx: *Context,
     handle: vk.VkSemaphore,
@@ -128,6 +115,63 @@ pub const Semaphore = struct {
     pub fn deinit(self: *Semaphore) void {
         vk.vkDestroySemaphore(self.ctx.device, self.handle, null);
         self.* = undefined;
+    }
+};
+
+/// Signal values must strictly increase across submits on the same Timeline.
+pub const Timeline = struct {
+    ctx: *Context,
+    handle: vk.VkSemaphore,
+
+    pub fn init(ctx: *Context, initial_value: u64) !Timeline {
+        const type_info: vk.VkSemaphoreTypeCreateInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+            .semaphoreType = vk.VK_SEMAPHORE_TYPE_TIMELINE,
+            .initialValue = initial_value,
+        };
+        const info: vk.VkSemaphoreCreateInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = &type_info,
+        };
+        var handle: vk.VkSemaphore = undefined;
+        try ctx_mod.check(ctx.diag, vk.vkCreateSemaphore(ctx.device, &info, null, &handle), "vkCreateSemaphore");
+        return .{ .ctx = ctx, .handle = handle };
+    }
+
+    pub fn deinit(self: *Timeline) void {
+        vk.vkDestroySemaphore(self.ctx.device, self.handle, null);
+        self.* = undefined;
+    }
+
+    pub fn getValue(self: *Timeline) !u64 {
+        var value: u64 = 0;
+        try ctx_mod.check(
+            self.ctx.diag,
+            vk.vkGetSemaphoreCounterValue(self.ctx.device, self.handle, &value),
+            "vkGetSemaphoreCounterValue",
+        );
+        return value;
+    }
+
+    pub fn wait(self: *Timeline, value: u64, timeout_ns: u64) !void {
+        const info: vk.VkSemaphoreWaitInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+            .semaphoreCount = 1,
+            .pSemaphores = &self.handle,
+            .pValues = &value,
+        };
+        const r = vk.vkWaitSemaphores(self.ctx.device, &info, timeout_ns);
+        if (r == vk.VK_TIMEOUT) return error.Timeout;
+        try ctx_mod.check(self.ctx.diag, r, "vkWaitSemaphores");
+    }
+
+    pub fn signal(self: *Timeline, value: u64) !void {
+        const info: vk.VkSemaphoreSignalInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+            .semaphore = self.handle,
+            .value = value,
+        };
+        try ctx_mod.check(self.ctx.diag, vk.vkSignalSemaphore(self.ctx.device, &info), "vkSignalSemaphore");
     }
 };
 

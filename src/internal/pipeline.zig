@@ -20,10 +20,7 @@ pub const DispatchOptions = struct {
 pub const PipelineOptions = struct {
     binding_count: u32,
     push_constant_size: u32 = 0,
-    /// How many in-flight dispatches this pipeline can support against
-    /// distinct descriptor sets. record() rotates through the ring;
-    /// exceeding it returns error.RingExhausted. 0 means use the comptime
-    /// default from molten.options.
+    /// 0 means use the comptime default from molten.options.
     descriptor_ring_size: u32 = 0,
 };
 
@@ -58,14 +55,12 @@ pub const Pipeline = struct {
         const binding_count = options.binding_count;
         const push_size = options.push_constant_size;
 
-        // Copy into a u32-aligned buffer. vkCreateShaderModule's pCode requires
-        // 4-byte alignment, but @embedFile returns a u8 slice aligned to 1.
+        // pCode requires 4-byte alignment; @embedFile returns u8 aligned to 1.
         const code = try ctx.allocator.alignedAlloc(u32, .of(u32), spv_bytes.len / 4);
         defer ctx.allocator.free(code);
         @memcpy(std.mem.sliceAsBytes(code), spv_bytes);
 
-        // SPIR-V magic: 0x07230203 little-endian. Catch wrong-file-type early
-        // with a readable error rather than a cryptic driver rejection.
+        // SPIR-V magic, little-endian.
         if (code[0] != 0x07230203) return error.BadShader;
 
         const shader_info: vk.VkShaderModuleCreateInfo = .{
@@ -77,8 +72,7 @@ pub const Pipeline = struct {
         try ctx_mod.check(ctx.diag, vk.vkCreateShaderModule(ctx.device, &shader_info, null, &shader), "vkCreateShaderModule");
         errdefer vk.vkDestroyShaderModule(ctx.device, shader, null);
 
-        // Descriptor layout: `binding_count` storage buffers in set 0, bindings
-        // 0..binding_count-1. Caller is responsible for matching the shader.
+        // Set 0, bindings 0..binding_count-1, all storage buffers. Caller matches the shader.
         var bindings: [MAX_BINDINGS]vk.VkDescriptorSetLayoutBinding = undefined;
         for (0..binding_count) |i| {
             bindings[i] = .{
@@ -141,9 +135,6 @@ pub const Pipeline = struct {
         );
         errdefer vk.vkDestroyPipeline(ctx.device, pipeline, null);
 
-        // One pool sized for the whole ring, allocated once. record()
-        // rewrites set contents via vkUpdateDescriptorSets without ever
-        // touching the pool again.
         const pool_size: vk.VkDescriptorPoolSize = .{
             .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = binding_count * ring_size,
@@ -186,7 +177,6 @@ pub const Pipeline = struct {
     }
 
     pub fn deinit(self: *Pipeline) void {
-        // Sets are freed implicitly with the pool.
         vk.vkDestroyDescriptorPool(self.ctx.device, self.pool, null);
         vk.vkDestroyPipeline(self.ctx.device, self.pipeline, null);
         vk.vkDestroyPipelineLayout(self.ctx.device, self.pl_layout, null);
@@ -195,31 +185,15 @@ pub const Pipeline = struct {
         self.* = undefined;
     }
 
-    /// Caller must call this only once *all* in-flight dispatches against
-    /// this pipeline have completed on the device (e.g. after a fence
-    /// covering every outstanding submit, or vkQueueWaitIdle). Resetting
-    /// while any slot is still in use will let record() hand that slot
-    /// out again and the GPU will read/write through it under the prior
-    /// submission. Resets the cursor so the ring restarts at slot 0.
+    /// Caller must ensure all in-flight dispatches completed; resetting early
+    /// lets record() hand out a slot the GPU is still reading/writing.
     pub fn ringReset(self: *Pipeline) void {
         self.in_flight = 0;
         self.ring_cursor = 0;
     }
 
-    /// Records bind/push/dispatch into `cmd`. Caller is responsible for
-    /// having called cmd.begin(), and for inserting any barriers and
-    /// calling cmd.end() / Context.submit() afterwards. Each call consumes
-    /// one ring slot; the slot becomes reusable after ringReset() (i.e.
-    /// once the caller knows the prior submission completed).
-    ///
-    /// Barrier rules:
-    /// - Reading a written buffer back on the host: insert
-    ///   cmd.barrierComputeToHost() before cmd.end().
-    /// - Feeding the output of one dispatch into another on the GPU:
-    ///   insert cmd.barrierComputeToCompute() between the two record()
-    ///   calls (same cmd) or at the start of the second cmd.
-    /// Without these the read sees stale data; validation layers will
-    /// flag it but releases will silently misbehave.
+    /// Caller owns cmd.begin(), the trailing barrier, cmd.end(), and submit.
+    /// Each call consumes one ring slot, freed by ringReset().
     pub fn record(self: *Pipeline, cmd: *CommandBuffer, binds: []const BindEntry, options: DispatchOptions) !void {
         if (binds.len != self.binding_count) return error.InvalidArgument;
         if (options.push.len != self.push_constant_size) return error.InvalidArgument;
@@ -264,10 +238,8 @@ pub const Pipeline = struct {
         vk.vkCmdDispatch(cmd.handle, options.groups[0], options.groups[1], options.groups[2]);
     }
 
-    /// One-shot helper: records into a temporary command buffer, adds a
-    /// compute->host barrier (the common case for "read the result back
-    /// from the CPU"), submits, and waits idle. For chained GPU work or
-    /// host/device overlap, use record() + Context.submit() directly.
+    /// One-shot record + submit + waitIdle, with a compute->host barrier baked in.
+    /// For chained GPU work or host/device overlap, use record() + Context.submit().
     pub fn dispatch(self: *Pipeline, binds: []const BindEntry, options: DispatchOptions) !void {
         var cmd = try CommandBuffer.init(self.ctx);
         defer cmd.deinit();

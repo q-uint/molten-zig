@@ -1,10 +1,7 @@
 const std = @import("std");
 const vk = @import("c");
 
-/// Optional sink for the most recent failing Vulkan call. Library functions
-/// take a `?*Diagnostics`; on failure they record the call's label and the
-/// raw VkResult, then return a typed error from molten.Error. Callers who
-/// don't pass one get the typed error and nothing else.
+/// Optional sink for the last failing VkResult and its call-site label.
 pub const Diagnostics = struct {
     last_label: []const u8 = "",
     last_result: vk.VkResult = vk.VK_SUCCESS,
@@ -35,8 +32,7 @@ pub fn check(
     return mapResult(result);
 }
 
-/// Errors produced by check(). Kept here so the public Error set in molten.zig
-/// can be defined as a superset without duplicating the VkResult mappings.
+/// Subset re-exported by molten.Error.
 pub const Error = error{
     OutOfHostMemory,
     OutOfDeviceMemory,
