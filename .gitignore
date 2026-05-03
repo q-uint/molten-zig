@@ -1,5 +1,4 @@
 .zig-cache/
 zig-out/
 *.spv
-host
-host.dSYM/
+disassembly/

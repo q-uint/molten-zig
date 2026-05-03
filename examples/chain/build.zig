@@ -41,6 +41,14 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the chained two-pass reduce");
     run_step.dependOn(&run.step);
 
+    const run_binary = b.addRunArtifact(exe);
+    run_binary.addFileArg(sum_zig.spv);
+    run_binary.addArg("--binary");
+
+    const all = b.step("all", "Run both timeline and binary+fence variants");
+    all.dependOn(&run.step);
+    all.dependOn(&run_binary.step);
+
     b.default_step.dependOn(&exe.step);
     b.default_step.dependOn(&install_spv.step);
 }
