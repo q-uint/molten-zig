@@ -1,7 +1,10 @@
 const std = @import("std");
 const vk = @import("c");
 const ctx_mod = @import("context.zig");
+const cmd_mod = @import("command.zig");
+const molten = @import("../molten.zig");
 const Context = ctx_mod.Context;
+const CommandBuffer = cmd_mod.CommandBuffer;
 
 pub const BindEntry = struct {
     ctx: *const Context,
@@ -17,13 +20,17 @@ pub const DispatchOptions = struct {
 pub const PipelineOptions = struct {
     binding_count: u32,
     push_constant_size: u32 = 0,
+    /// How many in-flight dispatches this pipeline can support against
+    /// distinct descriptor sets. record() rotates through the ring;
+    /// exceeding it returns error.RingExhausted. 0 means use the comptime
+    /// default from molten.options.
+    descriptor_ring_size: u32 = 0,
 };
 
-/// Upper bound on storage-buffer bindings per pipeline. Lets dispatch() use
-/// stack scratch arrays without an allocator. Bump if a real shader needs more.
-pub const MAX_BINDINGS: u32 = 16;
-
-pub const MAX_PUSH_CONSTANT_SIZE: u32 = 128;
+const MAX_BINDINGS: u32 = molten.options.max_bindings;
+const MAX_PUSH_CONSTANT_SIZE: u32 = molten.options.max_push_constant_size;
+const DEFAULT_RING: u32 = molten.options.default_descriptor_ring_size;
+const MAX_RING: u32 = molten.options.max_descriptor_ring_size;
 
 pub const Pipeline = struct {
     ctx: *Context,
@@ -31,14 +38,23 @@ pub const Pipeline = struct {
     ds_layout: vk.VkDescriptorSetLayout,
     pl_layout: vk.VkPipelineLayout,
     pipeline: vk.VkPipeline,
+    pool: vk.VkDescriptorPool,
+    sets: [MAX_RING]vk.VkDescriptorSet,
     binding_count: u32,
     push_constant_size: u32,
+    ring_size: u32,
+    ring_cursor: u32,
+    in_flight: u32,
 
     pub fn init(ctx: *Context, spv_bytes: []const u8, options: PipelineOptions) !Pipeline {
         if (spv_bytes.len % 4 != 0 or spv_bytes.len < 4) return error.BadShader;
-        if (options.binding_count == 0 or options.binding_count > MAX_BINDINGS) return error.InvalidArgument;
-        if (options.push_constant_size > MAX_PUSH_CONSTANT_SIZE) return error.InvalidArgument;
+        if (options.binding_count == 0) return error.InvalidArgument;
+        if (options.binding_count > MAX_BINDINGS) return error.TooManyBindings;
+        if (options.push_constant_size > MAX_PUSH_CONSTANT_SIZE) return error.PushConstantTooLarge;
         if (options.push_constant_size % 4 != 0) return error.InvalidArgument;
+        const ring_size = if (options.descriptor_ring_size == 0) DEFAULT_RING else options.descriptor_ring_size;
+        if (ring_size == 0) return error.InvalidArgument;
+        if (ring_size > MAX_RING) return error.RingSizeTooLarge;
         const binding_count = options.binding_count;
         const push_size = options.push_constant_size;
 
@@ -125,18 +141,53 @@ pub const Pipeline = struct {
         );
         errdefer vk.vkDestroyPipeline(ctx.device, pipeline, null);
 
+        // One pool sized for the whole ring, allocated once. record()
+        // rewrites set contents via vkUpdateDescriptorSets without ever
+        // touching the pool again.
+        const pool_size: vk.VkDescriptorPoolSize = .{
+            .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = binding_count * ring_size,
+        };
+        const pool_info: vk.VkDescriptorPoolCreateInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = ring_size,
+            .poolSizeCount = 1,
+            .pPoolSizes = &pool_size,
+        };
+        var pool: vk.VkDescriptorPool = undefined;
+        try ctx_mod.check(ctx.diag, vk.vkCreateDescriptorPool(ctx.device, &pool_info, null, &pool), "vkCreateDescriptorPool");
+        errdefer vk.vkDestroyDescriptorPool(ctx.device, pool, null);
+
+        var ring_layouts: [MAX_RING]vk.VkDescriptorSetLayout = undefined;
+        for (0..ring_size) |i| ring_layouts[i] = ds_layout;
+        const ds_alloc_info: vk.VkDescriptorSetAllocateInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = pool,
+            .descriptorSetCount = ring_size,
+            .pSetLayouts = &ring_layouts,
+        };
+        var sets: [MAX_RING]vk.VkDescriptorSet = undefined;
+        try ctx_mod.check(ctx.diag, vk.vkAllocateDescriptorSets(ctx.device, &ds_alloc_info, &sets), "vkAllocateDescriptorSets");
+
         return .{
             .ctx = ctx,
             .shader = shader,
             .ds_layout = ds_layout,
             .pl_layout = pl_layout,
             .pipeline = pipeline,
+            .pool = pool,
+            .sets = sets,
             .binding_count = binding_count,
             .push_constant_size = push_size,
+            .ring_size = ring_size,
+            .ring_cursor = 0,
+            .in_flight = 0,
         };
     }
 
     pub fn deinit(self: *Pipeline) void {
+        // Sets are freed implicitly with the pool.
+        vk.vkDestroyDescriptorPool(self.ctx.device, self.pool, null);
         vk.vkDestroyPipeline(self.ctx.device, self.pipeline, null);
         vk.vkDestroyPipelineLayout(self.ctx.device, self.pl_layout, null);
         vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.ds_layout, null);
@@ -144,35 +195,43 @@ pub const Pipeline = struct {
         self.* = undefined;
     }
 
-    /// Synchronous: records, submits, and waits for queue idle before returning.
-    pub fn dispatch(self: *Pipeline, binds: []const BindEntry, options: DispatchOptions) !void {
+    /// Caller must call this only once *all* in-flight dispatches against
+    /// this pipeline have completed on the device (e.g. after a fence
+    /// covering every outstanding submit, or vkQueueWaitIdle). Resetting
+    /// while any slot is still in use will let record() hand that slot
+    /// out again and the GPU will read/write through it under the prior
+    /// submission. Resets the cursor so the ring restarts at slot 0.
+    pub fn ringReset(self: *Pipeline) void {
+        self.in_flight = 0;
+        self.ring_cursor = 0;
+    }
+
+    /// Records bind/push/dispatch into `cmd`. Caller is responsible for
+    /// having called cmd.begin(), and for inserting any barriers and
+    /// calling cmd.end() / Context.submit() afterwards. Each call consumes
+    /// one ring slot; the slot becomes reusable after ringReset() (i.e.
+    /// once the caller knows the prior submission completed).
+    ///
+    /// Barrier rules:
+    /// - Reading a written buffer back on the host: insert
+    ///   cmd.barrierComputeToHost() before cmd.end().
+    /// - Feeding the output of one dispatch into another on the GPU:
+    ///   insert cmd.barrierComputeToCompute() between the two record()
+    ///   calls (same cmd) or at the start of the second cmd.
+    /// Without these the read sees stale data; validation layers will
+    /// flag it but releases will silently misbehave.
+    pub fn record(self: *Pipeline, cmd: *CommandBuffer, binds: []const BindEntry, options: DispatchOptions) !void {
         if (binds.len != self.binding_count) return error.InvalidArgument;
         if (options.push.len != self.push_constant_size) return error.InvalidArgument;
+        if (self.in_flight >= self.ring_size) return error.RingExhausted;
         const ctx = self.ctx;
+        std.debug.assert(cmd.ctx == ctx);
         for (binds) |b| std.debug.assert(b.ctx == ctx);
 
-        const pool_size: vk.VkDescriptorPoolSize = .{
-            .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = @intCast(binds.len),
-        };
-        const pool_info: vk.VkDescriptorPoolCreateInfo = .{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1,
-            .poolSizeCount = 1,
-            .pPoolSizes = &pool_size,
-        };
-        var pool: vk.VkDescriptorPool = undefined;
-        try ctx_mod.check(ctx.diag, vk.vkCreateDescriptorPool(ctx.device, &pool_info, null, &pool), "vkCreateDescriptorPool");
-        defer vk.vkDestroyDescriptorPool(ctx.device, pool, null);
-
-        const ds_alloc_info: vk.VkDescriptorSetAllocateInfo = .{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &self.ds_layout,
-        };
-        var ds: vk.VkDescriptorSet = undefined;
-        try ctx_mod.check(ctx.diag, vk.vkAllocateDescriptorSets(ctx.device, &ds_alloc_info, &ds), "vkAllocateDescriptorSets");
+        const slot = self.ring_cursor;
+        self.ring_cursor = (self.ring_cursor + 1) % self.ring_size;
+        self.in_flight += 1;
+        const ds = self.sets[slot];
 
         var buf_infos: [MAX_BINDINGS]vk.VkDescriptorBufferInfo = undefined;
         var writes: [MAX_BINDINGS]vk.VkWriteDescriptorSet = undefined;
@@ -190,30 +249,11 @@ pub const Pipeline = struct {
         }
         vk.vkUpdateDescriptorSets(ctx.device, @intCast(binds.len), &writes, 0, null);
 
-        const cmd_alloc_info: vk.VkCommandBufferAllocateInfo = .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = ctx.cmd_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        var cmd: vk.VkCommandBuffer = undefined;
-        try ctx_mod.check(
-            ctx.diag,
-            vk.vkAllocateCommandBuffers(ctx.device, &cmd_alloc_info, &cmd),
-            "vkAllocateCommandBuffers",
-        );
-        defer vk.vkFreeCommandBuffers(ctx.device, ctx.cmd_pool, 1, &cmd);
-
-        const begin_info: vk.VkCommandBufferBeginInfo = .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        };
-        try ctx_mod.check(ctx.diag, vk.vkBeginCommandBuffer(cmd, &begin_info), "vkBeginCommandBuffer");
-        vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pipeline);
-        vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pl_layout, 0, 1, &ds, 0, null);
+        vk.vkCmdBindPipeline(cmd.handle, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pipeline);
+        vk.vkCmdBindDescriptorSets(cmd.handle, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pl_layout, 0, 1, &ds, 0, null);
         if (options.push.len > 0) {
             vk.vkCmdPushConstants(
-                cmd,
+                cmd.handle,
                 self.pl_layout,
                 vk.VK_SHADER_STAGE_COMPUTE_BIT,
                 0,
@@ -221,33 +261,24 @@ pub const Pipeline = struct {
                 options.push.ptr,
             );
         }
-        vk.vkCmdDispatch(cmd, options.groups[0], options.groups[1], options.groups[2]);
+        vk.vkCmdDispatch(cmd.handle, options.groups[0], options.groups[1], options.groups[2]);
+    }
 
-        const compute_to_host: vk.VkMemoryBarrier = .{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = vk.VK_ACCESS_HOST_READ_BIT,
-        };
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            vk.VK_PIPELINE_STAGE_HOST_BIT,
-            0,
-            1,
-            &compute_to_host,
-            0,
-            null,
-            0,
-            null,
-        );
-        try ctx_mod.check(ctx.diag, vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+    /// One-shot helper: records into a temporary command buffer, adds a
+    /// compute->host barrier (the common case for "read the result back
+    /// from the CPU"), submits, and waits idle. For chained GPU work or
+    /// host/device overlap, use record() + Context.submit() directly.
+    pub fn dispatch(self: *Pipeline, binds: []const BindEntry, options: DispatchOptions) !void {
+        var cmd = try CommandBuffer.init(self.ctx);
+        defer cmd.deinit();
 
-        const submit_info: vk.VkSubmitInfo = .{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-        };
-        try ctx_mod.check(ctx.diag, vk.vkQueueSubmit(ctx.queue, 1, &submit_info, null), "vkQueueSubmit");
-        try ctx_mod.check(ctx.diag, vk.vkQueueWaitIdle(ctx.queue), "vkQueueWaitIdle");
+        try cmd.begin();
+        try self.record(&cmd, binds, options);
+        cmd.barrierComputeToHost();
+        try cmd.end();
+
+        try self.ctx.submit(.{ .cmd = &cmd });
+        try ctx_mod.check(self.ctx.diag, vk.vkQueueWaitIdle(self.ctx.queue), "vkQueueWaitIdle");
+        self.ringReset();
     }
 };

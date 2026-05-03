@@ -1,4 +1,4 @@
-const reduce = @import("reduce.zig");
+const reduce = @import("reduce");
 
 pub const Kernel = reduce.Reduce(i32, .max, 64, .{});
 

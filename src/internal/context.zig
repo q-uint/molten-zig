@@ -2,10 +2,34 @@ const std = @import("std");
 const vk = @import("c");
 const buffer = @import("buffer.zig");
 const pipeline = @import("pipeline.zig");
+const cmd_mod = @import("command.zig");
+const molten = @import("../molten.zig");
 const diag_mod = @import("diagnostics.zig");
 
 pub const Diagnostics = diag_mod.Diagnostics;
 pub const check = diag_mod.check;
+
+const MAX_SEMAPHORES: u32 = molten.options.max_semaphores_per_submit;
+
+pub const SemaphoreWait = struct {
+    semaphore: *cmd_mod.Semaphore,
+    /// Pipeline stage at which the wait takes effect. Use a constant from
+    /// `molten.PipelineStage` (e.g. `.compute_shader` for a dispatch that
+    /// consumes results signaled by a previous dispatch).
+    stage: cmd_mod.PipelineStageFlags,
+};
+
+pub const SubmitOptions = struct {
+    cmd: *const cmd_mod.CommandBuffer,
+    /// Semaphores to wait on before this submit's work begins (each at
+    /// its own pipeline stage).
+    waits: []const SemaphoreWait = &.{},
+    /// Semaphores to signal once this submit's work completes.
+    signals: []const *cmd_mod.Semaphore = &.{},
+    /// Optional fence signaled when the submit completes. Pass one to
+    /// let the host wait without vkQueueWaitIdle.
+    fence: ?*cmd_mod.Fence = null,
+};
 
 pub const Options = struct {
     app_name: [:0]const u8 = "molten-zig",
@@ -197,6 +221,39 @@ pub const Context = struct {
 
     pub fn loadPipeline(self: *Context, spv_bytes: []const u8, options: pipeline.PipelineOptions) !pipeline.Pipeline {
         return pipeline.Pipeline.init(self, spv_bytes, options);
+    }
+
+    pub fn submit(self: *Context, options: SubmitOptions) !void {
+        if (options.waits.len > MAX_SEMAPHORES or options.signals.len > MAX_SEMAPHORES)
+            return error.TooManySemaphores;
+
+        var wait_handles: [MAX_SEMAPHORES]vk.VkSemaphore = undefined;
+        var wait_stages: [MAX_SEMAPHORES]vk.VkPipelineStageFlags = undefined;
+        for (options.waits, 0..) |w, i| {
+            std.debug.assert(w.semaphore.ctx == self);
+            wait_handles[i] = w.semaphore.handle;
+            wait_stages[i] = w.stage;
+        }
+        var signal_handles: [MAX_SEMAPHORES]vk.VkSemaphore = undefined;
+        for (options.signals, 0..) |s, i| {
+            std.debug.assert(s.ctx == self);
+            signal_handles[i] = s.handle;
+        }
+
+        std.debug.assert(options.cmd.ctx == self);
+        const cmd_handle = options.cmd.handle;
+        const submit_info: vk.VkSubmitInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = @intCast(options.waits.len),
+            .pWaitSemaphores = if (options.waits.len > 0) &wait_handles else null,
+            .pWaitDstStageMask = if (options.waits.len > 0) &wait_stages else null,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd_handle,
+            .signalSemaphoreCount = @intCast(options.signals.len),
+            .pSignalSemaphores = if (options.signals.len > 0) &signal_handles else null,
+        };
+        const fence: vk.VkFence = if (options.fence) |f| f.handle else null;
+        try check(self.diag, vk.vkQueueSubmit(self.queue, 1, &submit_info, fence), "vkQueueSubmit");
     }
 };
 

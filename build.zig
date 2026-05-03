@@ -89,8 +89,19 @@ pub const KernelArtifact = struct {
     spv: std.Build.LazyPath,
 };
 
+pub const KernelImport = struct {
+    /// Name as seen by `@import` inside the kernel.
+    name: []const u8,
+    /// Source file backing the import.
+    path: std.Build.LazyPath,
+};
+
 pub const CompileOptions = struct {
-    extra_inputs: []const std.Build.LazyPath = &.{},
+    /// Named modules importable from the kernel via `@import("<name>")`.
+    /// The kernel compile is a raw `zig build-obj`, so it does not see the
+    /// host build's modules; declare any cross-package imports here. Also
+    /// covers cache invalidation: editing the imported file rebuilds.
+    imports: []const KernelImport = &.{},
     /// Debug mode wraps integer ops in overflow checks; ReleaseFast skips them.
     optimize: std.builtin.OptimizeMode = .Debug,
     /// Set false to skip spirv-val. Useful when iterating on the SPIR-V backend.
@@ -135,10 +146,16 @@ pub fn compileKernel(
         opt_flag,
     });
     if (opts.variable_pointers) compile.addArg("-mcpu=generic+variable_pointers");
-    compile.addFileArg(kernel_path);
-    for (opts.extra_inputs) |path| compile.addFileInput(path);
+
+    // Wire imports as named modules. `--dep` populates the next module's
+    // import table, then `-Mroot=<kernel>` defines the root module that
+    // consumes them. `-femit-bin` attaches to the root module, so it must
+    // come after the root `-M`.
+    for (opts.imports) |imp| compile.addArgs(&.{ "--dep", imp.name });
+    compile.addPrefixedFileArg("-Mroot=", kernel_path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});
     const raw_spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
+    for (opts.imports) |imp| compile.addPrefixedFileArg(b.fmt("-M{s}=", .{imp.name}), imp.path);
 
     if (!opts.validate) return .{ .spv = raw_spv };
     return .{ .spv = validateSpv(b, raw_spv, out_name) };

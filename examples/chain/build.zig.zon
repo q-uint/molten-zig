@@ -1,7 +1,7 @@
 .{
-    .name = .reduce,
+    .name = .chain,
     .version = "0.0.0",
-    .fingerprint = 0x338c9208d721775a,
+    .fingerprint = 0xb10218cab051c2cf,
     .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
     .dependencies = .{
         .molten = .{ .path = "../.." },
@@ -11,6 +11,5 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "disassembly",
     },
 }

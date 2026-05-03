@@ -9,6 +9,10 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    const dep_common = b.dependency("common", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -20,13 +24,15 @@ pub fn build(b: *std.Build) !void {
     const exe = b.addExecutable(.{ .name = "reduce", .root_module = exe_mod });
     b.installArtifact(exe);
 
-    const reduce_inputs = [_]std.Build.LazyPath{b.path("src/reduce.zig")};
+    const reduce_imports = [_]molten_build.KernelImport{
+        .{ .name = "reduce", .path = dep_common.path("src/reduce.zig") },
+    };
     // ReleaseFast: Debug-mode codegen wraps every signed/unsigned integer
     // op with overflow-check scaffolding, which makes the kernel 6x larger
     // and obscures the comptime story. The asymmetry shows up clearly
     // between sum (overflow-checked add) and max (no check) in Debug.
     const kopts: molten_build.CompileOptions = .{
-        .extra_inputs = &reduce_inputs,
+        .imports = &reduce_imports,
         .optimize = .ReleaseFast,
         .variable_pointers = true,
     };

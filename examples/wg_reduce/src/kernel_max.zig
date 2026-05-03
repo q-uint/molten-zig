@@ -1,4 +1,4 @@
-const wg_reduce = @import("wg_reduce.zig");
+const wg_reduce = @import("wg_reduce");
 
 pub const Kernel = wg_reduce.WgReduce(i32, .max, 2048, 256, .{});
 

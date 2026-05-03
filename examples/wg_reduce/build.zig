@@ -17,9 +17,11 @@ pub fn build(b: *std.Build) !void {
     const exe = b.addExecutable(.{ .name = "wg_reduce", .root_module = exe_mod });
     b.installArtifact(exe);
 
-    const wg_reduce_inputs = [_]std.Build.LazyPath{b.path("src/wg_reduce.zig")};
+    const wg_reduce_imports = [_]molten_build.KernelImport{
+        .{ .name = "wg_reduce", .path = b.path("src/wg_reduce.zig") },
+    };
     const kopts: molten_build.CompileOptions = .{
-        .extra_inputs = &wg_reduce_inputs,
+        .imports = &wg_reduce_imports,
         .optimize = .ReleaseFast,
     };
     const sum_zig = molten_build.compileKernel(b, dep, "sum_zig", b.path("src/kernel_sum.zig"), kopts);
