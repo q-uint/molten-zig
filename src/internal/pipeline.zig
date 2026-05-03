@@ -4,6 +4,7 @@ const ctx_mod = @import("context.zig");
 const Context = ctx_mod.Context;
 
 pub const BindEntry = struct {
+    ctx: *const Context,
     handle: vk.VkBuffer,
     size: vk.VkDeviceSize,
 };
@@ -57,7 +58,7 @@ pub const Pipeline = struct {
             .pCode = code.ptr,
         };
         var shader: vk.VkShaderModule = undefined;
-        try ctx_mod.check(vk.vkCreateShaderModule(ctx.device, &shader_info, null, &shader), "vkCreateShaderModule");
+        try ctx_mod.check(ctx.diag, vk.vkCreateShaderModule(ctx.device, &shader_info, null, &shader), "vkCreateShaderModule");
         errdefer vk.vkDestroyShaderModule(ctx.device, shader, null);
 
         // Descriptor layout: `binding_count` storage buffers in set 0, bindings
@@ -79,6 +80,7 @@ pub const Pipeline = struct {
         };
         var ds_layout: vk.VkDescriptorSetLayout = undefined;
         try ctx_mod.check(
+            ctx.diag,
             vk.vkCreateDescriptorSetLayout(ctx.device, &ds_layout_info, null, &ds_layout),
             "vkCreateDescriptorSetLayout",
         );
@@ -98,6 +100,7 @@ pub const Pipeline = struct {
         };
         var pl_layout: vk.VkPipelineLayout = undefined;
         try ctx_mod.check(
+            ctx.diag,
             vk.vkCreatePipelineLayout(ctx.device, &pl_layout_info, null, &pl_layout),
             "vkCreatePipelineLayout",
         );
@@ -116,6 +119,7 @@ pub const Pipeline = struct {
         };
         var pipeline: vk.VkPipeline = undefined;
         try ctx_mod.check(
+            ctx.diag,
             vk.vkCreateComputePipelines(ctx.device, null, 1, &pipeline_info, null, &pipeline),
             "vkCreateComputePipelines",
         );
@@ -145,6 +149,7 @@ pub const Pipeline = struct {
         if (binds.len != self.binding_count) return error.InvalidArgument;
         if (options.push.len != self.push_constant_size) return error.InvalidArgument;
         const ctx = self.ctx;
+        for (binds) |b| std.debug.assert(b.ctx == ctx);
 
         const pool_size: vk.VkDescriptorPoolSize = .{
             .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -157,7 +162,7 @@ pub const Pipeline = struct {
             .pPoolSizes = &pool_size,
         };
         var pool: vk.VkDescriptorPool = undefined;
-        try ctx_mod.check(vk.vkCreateDescriptorPool(ctx.device, &pool_info, null, &pool), "vkCreateDescriptorPool");
+        try ctx_mod.check(ctx.diag, vk.vkCreateDescriptorPool(ctx.device, &pool_info, null, &pool), "vkCreateDescriptorPool");
         defer vk.vkDestroyDescriptorPool(ctx.device, pool, null);
 
         const ds_alloc_info: vk.VkDescriptorSetAllocateInfo = .{
@@ -167,7 +172,7 @@ pub const Pipeline = struct {
             .pSetLayouts = &self.ds_layout,
         };
         var ds: vk.VkDescriptorSet = undefined;
-        try ctx_mod.check(vk.vkAllocateDescriptorSets(ctx.device, &ds_alloc_info, &ds), "vkAllocateDescriptorSets");
+        try ctx_mod.check(ctx.diag, vk.vkAllocateDescriptorSets(ctx.device, &ds_alloc_info, &ds), "vkAllocateDescriptorSets");
 
         var buf_infos: [MAX_BINDINGS]vk.VkDescriptorBufferInfo = undefined;
         var writes: [MAX_BINDINGS]vk.VkWriteDescriptorSet = undefined;
@@ -193,6 +198,7 @@ pub const Pipeline = struct {
         };
         var cmd: vk.VkCommandBuffer = undefined;
         try ctx_mod.check(
+            ctx.diag,
             vk.vkAllocateCommandBuffers(ctx.device, &cmd_alloc_info, &cmd),
             "vkAllocateCommandBuffers",
         );
@@ -202,7 +208,7 @@ pub const Pipeline = struct {
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
-        try ctx_mod.check(vk.vkBeginCommandBuffer(cmd, &begin_info), "vkBeginCommandBuffer");
+        try ctx_mod.check(ctx.diag, vk.vkBeginCommandBuffer(cmd, &begin_info), "vkBeginCommandBuffer");
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pipeline);
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pl_layout, 0, 1, &ds, 0, null);
         if (options.push.len > 0) {
@@ -234,14 +240,14 @@ pub const Pipeline = struct {
             0,
             null,
         );
-        try ctx_mod.check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+        try ctx_mod.check(ctx.diag, vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
         const submit_info: vk.VkSubmitInfo = .{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
         };
-        try ctx_mod.check(vk.vkQueueSubmit(ctx.queue, 1, &submit_info, null), "vkQueueSubmit");
-        try ctx_mod.check(vk.vkQueueWaitIdle(ctx.queue), "vkQueueWaitIdle");
+        try ctx_mod.check(ctx.diag, vk.vkQueueSubmit(ctx.queue, 1, &submit_info, null), "vkQueueSubmit");
+        try ctx_mod.check(ctx.diag, vk.vkQueueWaitIdle(ctx.queue), "vkQueueWaitIdle");
     }
 };

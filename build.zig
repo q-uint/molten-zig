@@ -33,7 +33,8 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .link_libc = true,
     });
-    molten.addImport("c", translate_vk.createModule());
+    const vk_mod = translate_vk.createModule();
+    molten.addImport("c", vk_mod);
     molten.linkSystemLibrary("vulkan", .{});
     molten.addIncludePath(.{ .cwd_relative = vulkan_include });
     molten.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
@@ -47,6 +48,25 @@ pub fn build(b: *std.Build) !void {
     });
     const check_step = b.step("check", "Type-check the molten library");
     check_step.dependOn(&lib_check.step);
+
+    // Live-Vulkan tests. Each test that needs a device skips itself if
+    // no usable Vulkan/MoltenVK runtime is available, so this is safe to
+    // run even without the SDK on PATH (the link step still requires it).
+    const tests_mod = b.createModule(.{
+        .root_source_file = b.path("tests/diagnostics.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    tests_mod.addImport("molten", molten);
+    tests_mod.addImport("c", vk_mod);
+    tests_mod.linkSystemLibrary("vulkan", .{});
+    tests_mod.addIncludePath(.{ .cwd_relative = vulkan_include });
+    tests_mod.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
+    const tests = b.addTest(.{ .root_module = tests_mod });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&run_tests.step);
 
     // GLSL parity: compile shader.comp -> shader.spv with glslangValidator,
     // validate it, install it. Consumers (the example) wire this into their

@@ -28,13 +28,20 @@ pub const Args = struct {
         const spv_path = it.next() orelse return error.BadArgs;
 
         var rest: std.ArrayList([]const u8) = .empty;
-        defer rest.deinit(alloc);
-        while (it.next()) |a| try rest.append(alloc, try alloc.dupe(u8, a));
+        errdefer {
+            for (rest.items) |a| alloc.free(a);
+            rest.deinit(alloc);
+        }
+        while (it.next()) |a| {
+            const dup = try alloc.dupe(u8, a);
+            errdefer alloc.free(dup);
+            try rest.append(alloc, dup);
+        }
 
-        return .{
-            .spv_path = try alloc.dupe(u8, spv_path),
-            .rest = try rest.toOwnedSlice(alloc),
-        };
+        const spv_owned = try alloc.dupe(u8, spv_path);
+        errdefer alloc.free(spv_owned);
+        const rest_owned = try rest.toOwnedSlice(alloc);
+        return .{ .spv_path = spv_owned, .rest = rest_owned };
     }
 
     pub fn deinit(self: Args, alloc: std.mem.Allocator) void {

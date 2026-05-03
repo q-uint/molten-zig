@@ -24,7 +24,7 @@ pub fn Buffer(comptime T: type) type {
                 .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
             };
             var handle: vk.VkBuffer = undefined;
-            try ctx_mod.check(vk.vkCreateBuffer(ctx.device, &info, null, &handle), "vkCreateBuffer");
+            try ctx_mod.check(ctx.diag, vk.vkCreateBuffer(ctx.device, &info, null, &handle), "vkCreateBuffer");
             errdefer vk.vkDestroyBuffer(ctx.device, handle, null);
 
             var mem_req: vk.VkMemoryRequirements = undefined;
@@ -42,10 +42,10 @@ pub fn Buffer(comptime T: type) type {
                 .memoryTypeIndex = mem_type,
             };
             var memory: vk.VkDeviceMemory = undefined;
-            try ctx_mod.check(vk.vkAllocateMemory(ctx.device, &alloc_info, null, &memory), "vkAllocateMemory");
+            try ctx_mod.check(ctx.diag, vk.vkAllocateMemory(ctx.device, &alloc_info, null, &memory), "vkAllocateMemory");
             errdefer vk.vkFreeMemory(ctx.device, memory, null);
 
-            try ctx_mod.check(vk.vkBindBufferMemory(ctx.device, handle, memory, 0), "vkBindBufferMemory");
+            try ctx_mod.check(ctx.diag, vk.vkBindBufferMemory(ctx.device, handle, memory, 0), "vkBindBufferMemory");
 
             return .{
                 .ctx = ctx,
@@ -67,6 +67,7 @@ pub fn Buffer(comptime T: type) type {
             if (data.len != self.count) return error.InvalidArgument;
             var ptr: ?*anyopaque = null;
             try ctx_mod.check(
+                self.ctx.diag,
                 vk.vkMapMemory(self.ctx.device, self.memory, 0, self.size, 0, &ptr),
                 "vkMapMemory(write)",
             );
@@ -79,7 +80,7 @@ pub fn Buffer(comptime T: type) type {
         }
 
         pub fn bind(self: *const Self) pipeline.BindEntry {
-            return .{ .handle = self.handle, .size = self.size };
+            return .{ .ctx = self.ctx, .handle = self.handle, .size = self.size };
         }
 
         /// Copy the buffer contents into `dst`. `dst.len` must equal `count`.
@@ -88,6 +89,7 @@ pub fn Buffer(comptime T: type) type {
             if (dst.len != self.count) return error.InvalidArgument;
             var ptr: ?*anyopaque = null;
             try ctx_mod.check(
+                self.ctx.diag,
                 vk.vkMapMemory(self.ctx.device, self.memory, 0, self.size, 0, &ptr),
                 "vkMapMemory(read)",
             );

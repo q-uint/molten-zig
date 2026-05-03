@@ -2,10 +2,18 @@ const std = @import("std");
 const vk = @import("c");
 const buffer = @import("buffer.zig");
 const pipeline = @import("pipeline.zig");
+const diag_mod = @import("diagnostics.zig");
+
+pub const Diagnostics = diag_mod.Diagnostics;
+pub const check = diag_mod.check;
 
 pub const Options = struct {
     app_name: [:0]const u8 = "molten-zig",
     enable_validation_if_available: bool = true,
+    /// Optional sink for the most recent failing Vulkan call. The pointer
+    /// must outlive the Context. Library code never writes to stderr; if
+    /// you want a record of which call failed, pass one here.
+    diagnostics: ?*Diagnostics = null,
 };
 
 pub const Context = struct {
@@ -16,10 +24,12 @@ pub const Context = struct {
     queue: vk.VkQueue,
     queue_family: u32,
     cmd_pool: vk.VkCommandPool,
+    diag: ?*Diagnostics,
     device_name_buf: [vk.VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]u8,
     device_name_len: usize,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Context {
+        const diag = options.diagnostics;
         const app_info: vk.VkApplicationInfo = .{
             .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
             .pApplicationName = options.app_name,
@@ -35,7 +45,7 @@ pub const Context = struct {
 
         const validation_layer = "VK_LAYER_KHRONOS_validation";
         const want_validation = options.enable_validation_if_available and
-            try hasLayer(allocator, validation_layer);
+            try hasLayer(allocator, diag, validation_layer);
         const layers = [_][*c]const u8{validation_layer};
 
         const inst_info: vk.VkInstanceCreateInfo = .{
@@ -49,15 +59,15 @@ pub const Context = struct {
         };
 
         var instance: vk.VkInstance = undefined;
-        try check(vk.vkCreateInstance(&inst_info, null, &instance), "vkCreateInstance");
+        try check(diag, vk.vkCreateInstance(&inst_info, null, &instance), "vkCreateInstance");
         errdefer vk.vkDestroyInstance(instance, null);
 
         var phys_count: u32 = 0;
-        try check(vk.vkEnumeratePhysicalDevices(instance, &phys_count, null), "vkEnumeratePhysicalDevices(count)");
-        if (phys_count == 0) return error.VulkanError;
+        try check(diag, vk.vkEnumeratePhysicalDevices(instance, &phys_count, null), "vkEnumeratePhysicalDevices(count)");
+        if (phys_count == 0) return error.NoPhysicalDevice;
         const phys_devs = try allocator.alloc(vk.VkPhysicalDevice, phys_count);
         defer allocator.free(phys_devs);
-        try check(vk.vkEnumeratePhysicalDevices(instance, &phys_count, phys_devs.ptr), "vkEnumeratePhysicalDevices(list)");
+        try check(diag, vk.vkEnumeratePhysicalDevices(instance, &phys_count, phys_devs.ptr), "vkEnumeratePhysicalDevices(list)");
         // MoltenVK exposes exactly one device on Apple Silicon.
         const phys = phys_devs[0];
 
@@ -74,7 +84,7 @@ pub const Context = struct {
                 break;
             }
         }
-        const queue_family = found_qf orelse return error.VulkanError;
+        const queue_family = found_qf orelse return error.NoComputeQueue;
 
         const queue_prio: f32 = 1.0;
         const queue_info: vk.VkDeviceQueueCreateInfo = .{
@@ -104,17 +114,7 @@ pub const Context = struct {
             v11_features.variablePointers == 0 or
             v11_features.variablePointersStorageBuffer == 0)
         {
-            std.debug.print(
-                "device missing required features: int64={d} int16={d} int8={d} varPtr={d} varPtrSB={d}\n",
-                .{
-                    features2.features.shaderInt64,
-                    features2.features.shaderInt16,
-                    v12_features.shaderInt8,
-                    v11_features.variablePointers,
-                    v11_features.variablePointersStorageBuffer,
-                },
-            );
-            return error.VulkanError;
+            return error.MissingRequiredFeature;
         }
 
         const enabled_v11: vk.VkPhysicalDeviceVulkan11Features = .{
@@ -142,7 +142,7 @@ pub const Context = struct {
             .pEnabledFeatures = &enabled_features,
         };
         var device: vk.VkDevice = undefined;
-        try check(vk.vkCreateDevice(phys, &dev_info, null, &device), "vkCreateDevice");
+        try check(diag, vk.vkCreateDevice(phys, &dev_info, null, &device), "vkCreateDevice");
         errdefer vk.vkDestroyDevice(device, null);
 
         var queue: vk.VkQueue = undefined;
@@ -153,7 +153,7 @@ pub const Context = struct {
             .queueFamilyIndex = queue_family,
         };
         var cmd_pool: vk.VkCommandPool = undefined;
-        try check(vk.vkCreateCommandPool(device, &cmd_pool_info, null, &cmd_pool), "vkCreateCommandPool");
+        try check(diag, vk.vkCreateCommandPool(device, &cmd_pool_info, null, &cmd_pool), "vkCreateCommandPool");
         errdefer vk.vkDestroyCommandPool(device, cmd_pool, null);
 
         var phys_props: vk.VkPhysicalDeviceProperties = undefined;
@@ -168,6 +168,7 @@ pub const Context = struct {
             .queue = queue,
             .queue_family = queue_family,
             .cmd_pool = cmd_pool,
+            .diag = diag,
             .device_name_buf = undefined,
             .device_name_len = name_slice.len,
         };
@@ -199,20 +200,13 @@ pub const Context = struct {
     }
 };
 
-pub fn check(result: vk.VkResult, comptime label: []const u8) !void {
-    if (result != vk.VK_SUCCESS) {
-        std.debug.print("{s} failed: VkResult={d}\n", .{ label, result });
-        return error.VulkanError;
-    }
-}
-
-fn hasLayer(allocator: std.mem.Allocator, name: []const u8) !bool {
+fn hasLayer(allocator: std.mem.Allocator, diag: ?*Diagnostics, name: []const u8) !bool {
     var count: u32 = 0;
-    try check(vk.vkEnumerateInstanceLayerProperties(&count, null), "vkEnumerateInstanceLayerProperties(count)");
+    try check(diag, vk.vkEnumerateInstanceLayerProperties(&count, null), "vkEnumerateInstanceLayerProperties(count)");
     if (count == 0) return false;
     const props = try allocator.alloc(vk.VkLayerProperties, count);
     defer allocator.free(props);
-    try check(vk.vkEnumerateInstanceLayerProperties(&count, props.ptr), "vkEnumerateInstanceLayerProperties(list)");
+    try check(diag, vk.vkEnumerateInstanceLayerProperties(&count, props.ptr), "vkEnumerateInstanceLayerProperties(list)");
     for (props) |p| {
         if (std.mem.eql(u8, std.mem.sliceTo(&p.layerName, 0), name)) return true;
     }
@@ -228,5 +222,5 @@ pub fn findMemoryType(phys: vk.VkPhysicalDevice, type_filter: u32, props: vk.VkM
             return @intCast(i);
         }
     }
-    return error.VulkanError;
+    return error.NoSuitableMemoryType;
 }
