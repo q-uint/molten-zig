@@ -177,6 +177,8 @@ pub const Context = struct {
 
         const cmd_pool_info: vk.VkCommandPoolCreateInfo = .{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            // Required for CommandBuffer.reset() to be spec-legal.
+            .flags = vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             .queueFamilyIndex = queue_family,
         };
         var cmd_pool: vk.VkCommandPool = undefined;
@@ -219,7 +221,41 @@ pub const Context = struct {
         comptime T: type,
         count: usize,
     ) !buffer.Buffer(T) {
-        return buffer.Buffer(T).init(self, count);
+        return buffer.Buffer(T).init(self, count, .host_visible);
+    }
+
+    pub fn createDeviceBuffer(
+        self: *Context,
+        comptime T: type,
+        count: usize,
+    ) !buffer.Buffer(T) {
+        return buffer.Buffer(T).init(self, count, .device_local);
+    }
+
+    /// Device-local buffer pre-filled via a transient staging copy. Drains
+    /// the queue with vkQueueWaitIdle, so unrelated in-flight submits also
+    /// stall; for batched or overlapping uploads drive recordCopyFrom yourself.
+    pub fn createBufferInit(
+        self: *Context,
+        comptime T: type,
+        data: []const T,
+    ) !buffer.Buffer(T) {
+        var dst = try buffer.Buffer(T).init(self, data.len, .device_local);
+        errdefer dst.deinit();
+
+        var staging = try buffer.Buffer(T).init(self, data.len, .host_visible);
+        defer staging.deinit();
+        try staging.write(data);
+
+        var cmd = try cmd_mod.CommandBuffer.init(self);
+        defer cmd.deinit();
+        try cmd.begin();
+        try dst.recordCopyFrom(&cmd, &staging);
+        try cmd.end();
+
+        try self.submit(.{ .cmd = &cmd });
+        try check(self.diag, vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle");
+        return dst;
     }
 
     pub fn loadPipeline(self: *Context, spv_bytes: []const u8, options: pipeline.PipelineOptions) !pipeline.Pipeline {

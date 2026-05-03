@@ -29,6 +29,7 @@ pub fn check(
         d.last_label = label;
         d.last_result = result;
     }
+    if (result == vk.VK_TIMEOUT) return error.Timeout;
     return mapResult(result);
 }
 
@@ -42,6 +43,7 @@ pub const Error = error{
     ExtensionNotPresent,
     FeatureNotPresent,
     IncompatibleDriver,
+    Timeout,
     UnknownVulkanError,
 };
 

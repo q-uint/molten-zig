@@ -15,6 +15,7 @@ pub const PipelineOptions = pipeline.PipelineOptions;
 pub const DispatchOptions = pipeline.DispatchOptions;
 pub const BindEntry = pipeline.BindEntry;
 pub const CommandBuffer = command.CommandBuffer;
+pub const FramePool = command.FramePool;
 pub const Semaphore = command.Semaphore;
 pub const Timeline = command.Timeline;
 pub const Fence = command.Fence;
@@ -56,6 +57,7 @@ pub const Error = error{
 
     BadShader,
     InvalidArgument,
+    NotHostVisible,
     OutOfMemory,
     Timeout,
     RingExhausted,

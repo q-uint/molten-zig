@@ -2,7 +2,13 @@ const std = @import("std");
 const vk = @import("c");
 const ctx_mod = @import("context.zig");
 const Context = ctx_mod.Context;
+const cmd_mod = @import("command.zig");
 const pipeline = @import("pipeline.zig");
+
+pub const Kind = enum {
+    host_visible,
+    device_local,
+};
 
 pub fn Buffer(comptime T: type) type {
     return struct {
@@ -13,14 +19,18 @@ pub fn Buffer(comptime T: type) type {
         memory: vk.VkDeviceMemory,
         count: usize,
         size: vk.VkDeviceSize,
+        kind: Kind,
 
-        pub fn init(ctx: *Context, count: usize) !Self {
+        pub fn init(ctx: *Context, count: usize, kind: Kind) !Self {
+            std.debug.assert(count > 0);
             const size: vk.VkDeviceSize = @intCast(count * @sizeOf(T));
 
             const info: vk.VkBufferCreateInfo = .{
                 .sType = vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                 .size = size,
-                .usage = vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                .usage = vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
             };
             var handle: vk.VkBuffer = undefined;
@@ -30,11 +40,12 @@ pub fn Buffer(comptime T: type) type {
             var mem_req: vk.VkMemoryRequirements = undefined;
             vk.vkGetBufferMemoryRequirements(ctx.device, handle, &mem_req);
 
-            const mem_type = try ctx_mod.findMemoryType(
-                ctx.phys,
-                mem_req.memoryTypeBits,
-                vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            );
+            const props: vk.VkMemoryPropertyFlags = switch (kind) {
+                .host_visible => vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                .device_local => vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            };
+            const mem_type = try ctx_mod.findMemoryType(ctx.phys, mem_req.memoryTypeBits, props);
 
             const alloc_info: vk.VkMemoryAllocateInfo = .{
                 .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -53,17 +64,18 @@ pub fn Buffer(comptime T: type) type {
                 .memory = memory,
                 .count = count,
                 .size = size,
+                .kind = kind,
             };
         }
 
         pub fn deinit(self: *Self) void {
-            // Spec: bound buffers must be destroyed before their memory is freed.
             vk.vkDestroyBuffer(self.ctx.device, self.handle, null);
             vk.vkFreeMemory(self.ctx.device, self.memory, null);
             self.* = undefined;
         }
 
         pub fn write(self: *Self, data: []const T) !void {
+            if (self.kind != .host_visible) return error.NotHostVisible;
             if (data.len != self.count) return error.InvalidArgument;
             var ptr: ?*anyopaque = null;
             try ctx_mod.check(
@@ -83,6 +95,7 @@ pub fn Buffer(comptime T: type) type {
         }
 
         pub fn readInto(self: *Self, dst: []T) !void {
+            if (self.kind != .host_visible) return error.NotHostVisible;
             if (dst.len != self.count) return error.InvalidArgument;
             var ptr: ?*anyopaque = null;
             try ctx_mod.check(
@@ -101,6 +114,15 @@ pub fn Buffer(comptime T: type) type {
             errdefer result_allocator.free(out);
             try self.readInto(out);
             return out;
+        }
+
+        /// Record a full-buffer copy `src -> self`. Caller owns barriers + submit.
+        pub fn recordCopyFrom(self: *Self, cmd: *cmd_mod.CommandBuffer, src: *const Self) !void {
+            if (src.size != self.size) return error.InvalidArgument;
+            std.debug.assert(src.ctx == self.ctx);
+            std.debug.assert(cmd.ctx == self.ctx);
+            const region: vk.VkBufferCopy = .{ .srcOffset = 0, .dstOffset = 0, .size = self.size };
+            vk.vkCmdCopyBuffer(cmd.handle, src.handle, self.handle, 1, &region);
         }
     };
 }
