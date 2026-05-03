@@ -2,3 +2,7 @@
 	path = vendor/zig
 	url = git@codeberg.org:quint/zig.git
 	branch = spirv-fixes
+[submodule "vendor/llvm-project"]
+	path = vendor/llvm-project
+	url = https://github.com/llvm/llvm-project.git
+	shallow = true
