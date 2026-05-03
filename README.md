@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     for (0..N) |i| input[i] = @floatFromInt(i);
     try in.write(&input);
 
-    var pipeline = try ctx.loadPipeline(@embedFile("kernel.spv"), 2);
+    var pipeline = try ctx.loadPipeline(@embedFile("kernel.spv"), .{ .binding_count = 2 });
     defer pipeline.deinit();
 
     try pipeline.dispatch(&.{ in.bind(), out.bind() }, .{ .groups = .{ N, 1, 1 } });
@@ -35,7 +35,12 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-See [examples/vector_multiply](examples/vector_multiply/) for the runnable consumer this snippet was distilled from.
+See [examples/vector_multiply](examples/vector_multiply/) for the runnable consumer this snippet was distilled from. Other examples:
+
+- [examples/reduce](examples/reduce/) - single-workgroup sum reduction
+- [examples/wg_reduce](examples/wg_reduce/) - tiled reduction across workgroups, push-constant tail handling
+- [examples/matrix_transpose](examples/matrix_transpose/) - shared-memory tile transpose
+- [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
 
 ## Architecture
 
@@ -64,7 +69,7 @@ scripts/rebuild-zig.sh          # subsequent rebuilds after compiler edits (~30 
 
 After `scripts/build-zig.sh` completes, `zig` on the shell PATH is the patched stage3 compiler (re-enter the shell to pick it up). Host code uses translate-c (Zig 0.17+ replaced `@cImport` with `b.addTranslateC`), so the patched compiler builds everything - host and kernels.
 
-Then run the example:
+Then run an example:
 
 ```sh
 cd examples/vector_multiply
@@ -73,8 +78,22 @@ zig build all                   # validate both kernels, dispatch both through M
 
 `build all` runs the example twice: once with the GLSL-derived `.spv` (the parity baseline), once with the Zig-derived `.spv`. Both must produce element-wise `2x` output.
 
-## Status
+## API surface
 
-Works end-to-end for compute kernels using N storage buffers in set 0 (capped at `MAX_BINDINGS = 16`). Caller passes the binding count to `loadPipeline`. Buffer lifetimes are the caller's responsibility: a `Buffer` must outlive any dispatch that references it.
+- `Context` - device/queue setup, buffer + pipeline factories, submission entry points (`submit`, `submitToFrame`).
+- `Buffer` - host-visible storage buffer with `write`/`read`/`bind`. Lifetime is the caller's responsibility; must outlive any in-flight dispatch that references it.
+- `Pipeline` - compute pipeline with a built-in descriptor-set ring (size configurable via `PipelineOptions.descriptor_ring_size`). `dispatch` is the one-shot path; `record` writes into a caller-owned `CommandBuffer`. Push constants are supported via `PipelineOptions.push_constant_size` and `DispatchOptions.push`.
+- `CommandBuffer` - explicit recording for batching multiple dispatches in one submission.
+- `FramePool` - ring of command buffers + per-frame fence, for back-to-back frames without per-call allocation.
+- `Semaphore` / `Timeline` / `Fence` - binary and timeline sync primitives, wired through `SubmitOptions`.
+- `Diagnostics` - optional sink threaded through `Context.init` and friends; captures the failing Vulkan call and `VkResult` so typed errors stay terse.
 
-`dispatch` is synchronous and allocates a fresh descriptor pool + command buffer per call, then waits for queue idle. Fine for one-shots; in a tight loop the per-call Vulkan object churn will dominate. Reuse-across-dispatches is a non-goal for now.
+Tunables (override by declaring `pub const molten_options: molten.Options = .{ ... }` in your root file): `max_bindings`, `max_push_constant_size`, `max_descriptor_ring_size`, `default_descriptor_ring_size`, `max_semaphores_per_submit`.
+
+## Scope
+
+In scope: compute pipelines built from a single SPIR-V module, storage buffers in descriptor set 0, push constants, explicit command-buffer recording, and CPU/GPU sync via fences and binary or timeline semaphores. Enough to dispatch one or many kernels per frame and chain their results.
+
+Out of scope (for now): graphics pipelines, images and samplers, multiple descriptor sets, specialization constants, multi-queue submission, and presentation/swapchains. The library is a thin layer over Vulkan compute - it doesn't try to hide Vulkan, just to make the common compute paths typed and pleasant from Zig.
+
+Maturity: early. The API still moves between commits, examples are the canonical usage reference, and the patched Zig SPIR-V backend is itself a work in progress.
