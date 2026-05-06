@@ -11,7 +11,7 @@ if [ ! -x "$ZIG" ]; then
   exit 1
 fi
 
-EXAMPLES=(chain reduce matrix_transpose vector_multiply wg_reduce)
+EXAMPLES=(chain gemm reduce matrix_transpose vector_multiply wg_reduce)
 
 for ex in "${EXAMPLES[@]}"; do
   echo "==> examples/$ex"
