@@ -68,18 +68,47 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_tests.step);
 
-    // GLSL parity: compile shader.comp -> shader.spv with glslangValidator,
-    // validate it, install it. Consumers (the example) wire this into their
-    // own dispatch step. Kept at the top level so it does not bit-rot.
-    const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });
-    glsl.addFileArg(b.path("shader.comp"));
-    glsl.addArg("-o");
-    const raw_glsl_spv = glsl.addOutputFileArg("shader.spv");
-    const glsl_spv = validateSpv(b, raw_glsl_spv, "shader.spv");
-    const install_glsl_spv = b.addInstallFileWithDir(glsl_spv, .prefix, "shader.spv");
+    // Meta-steps that run `zig build all` / `zig build bench` in every
+    // example package. Each example is an independent package with its
+    // own build.zig consuming molten as a path dependency, so we shell
+    // out rather than wiring the child build graphs in - that would
+    // re-enter this build.zig as a dependency and tangle target/optimize
+    // propagation. Only registered when this build.zig is the top-level
+    // invocation; when consumed as a dependency (the examples themselves
+    // do this), it would recurse.
+    if (b.dep_prefix.len == 0) try registerExamplesSteps(b);
+}
 
-    const glsl_step = b.step("glsl-spv", "Compile shader.comp -> shader.spv with glslangValidator");
-    glsl_step.dependOn(&install_glsl_spv.step);
+fn registerExamplesSteps(b: *std.Build) !void {
+    const examples_step = b.step("examples", "Run `zig build all` in every example");
+    const bench_step = b.step("examples-bench", "Run `zig build bench` in every example that has one");
+    const io = b.graph.io;
+    var examples_dir = try b.build_root.handle.openDir(io, "examples", .{ .iterate = true });
+    defer examples_dir.close(io);
+    var it = examples_dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        // common/ is a shared library package consumed by other examples;
+        // it has no `all` step of its own.
+        if (std.mem.eql(u8, entry.name, "common")) continue;
+        // chain/ has no bench step (no --bench support in its main.zig).
+        const has_bench = !std.mem.eql(u8, entry.name, "chain");
+
+        const ex_path = b.pathJoin(&.{ "examples", entry.name });
+        b.build_root.handle.access(io, b.pathJoin(&.{ ex_path, "build.zig" }), .{}) catch continue;
+
+        const run_all = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "all" });
+        run_all.setCwd(b.path(ex_path));
+        run_all.setName(b.fmt("zig build all ({s})", .{entry.name}));
+        examples_step.dependOn(&run_all.step);
+
+        if (has_bench) {
+            const run_bench = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "bench" });
+            run_bench.setCwd(b.path(ex_path));
+            run_bench.setName(b.fmt("zig build bench ({s})", .{entry.name}));
+            bench_step.dependOn(&run_bench.step);
+        }
+    }
 }
 
 pub const KernelArtifact = struct {
@@ -191,4 +220,156 @@ pub fn validateSpv(
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print("error: " ++ fmt ++ "\n", args);
     std.process.exit(1);
+}
+
+/// Shared scaffolding for an example app. Wires the `molten` + `common`
+/// path deps, builds the exe module, installs the artifact, and exposes
+/// the bits later steps need (the dep handle for compileKernel, the
+/// `all`/`bench` step roots). Each example calls this then layers on its
+/// own kernel compiles and run/bench variants.
+pub const ExampleApp = struct {
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    dep: *std.Build.Dependency,
+    common: *std.Build.Dependency,
+    exe: *std.Build.Step.Compile,
+    /// Aggregator for `zig build all` - depended on by every run variant.
+    all: *std.Build.Step,
+    /// Aggregator for `zig build bench` - depended on by every bench variant.
+    bench: *std.Build.Step,
+};
+
+pub const ExampleOptions = struct {
+    /// Extra framework names to link (e.g. "Accelerate" for gemm). Picks
+    /// up SDKROOT from the environment for the framework search path,
+    /// matching how the Apple toolchain locates system frameworks.
+    frameworks: []const []const u8 = &.{},
+};
+
+pub fn standardExample(b: *std.Build, name: []const u8, opts: ExampleOptions) ExampleApp {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const dep = b.dependency("molten", .{ .target = target, .optimize = optimize });
+    const common = b.dependency("common", .{ .target = target, .optimize = optimize });
+
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("molten", dep.module("molten"));
+    exe_mod.addImport("common", common.module("common"));
+
+    if (opts.frameworks.len > 0) {
+        if (b.graph.environ_map.get("SDKROOT")) |sdk| {
+            exe_mod.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
+        }
+        for (opts.frameworks) |fw| exe_mod.linkFramework(fw, .{});
+    }
+
+    const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
+    b.installArtifact(exe);
+    b.default_step.dependOn(&exe.step);
+
+    const all = b.step("all", "Dispatch every kernel");
+    const bench = b.step("bench", "Benchmark every kernel");
+
+    return .{
+        .b = b,
+        .target = target,
+        .optimize = optimize,
+        .dep = dep,
+        .common = common,
+        .exe = exe,
+        .all = all,
+        .bench = bench,
+    };
+}
+
+pub const Variant = struct {
+    /// Short identifier used in step names (`run-<name>`). Conventionally
+    /// "zig"/"glsl" for parity kernels, or "sum"/"max" when a single
+    /// kernel takes an op selector.
+    name: []const u8,
+    spv: std.Build.LazyPath,
+    /// Args passed to the exe before `--bench`. Use this for the op
+    /// selector (`reduce` takes "sum"/"max") or the dispatch-shape kind
+    /// (`matrix_transpose` takes "zig"/"glsl").
+    extra_args: []const []const u8 = &.{},
+    /// Install the spv next to the exe under <name>.spv. Defaults true;
+    /// turn off if the example doesn't need the file on disk.
+    install: bool = true,
+    /// Install basename. Defaults to "<name>.spv".
+    install_name: ?[]const u8 = null,
+};
+
+/// Wire `run-<name>` + bench variant + install for one kernel. Contributes
+/// to the app's `all`/`bench` aggregators so a single `zig build all` or
+/// `zig build bench` covers every registered variant.
+pub fn addRunAndBench(app: ExampleApp, variant: Variant) void {
+    const b = app.b;
+
+    if (variant.install) {
+        const install_name = variant.install_name orelse b.fmt("{s}.spv", .{variant.name});
+        const install = b.addInstallFileWithDir(variant.spv, .prefix, install_name);
+        b.default_step.dependOn(&install.step);
+    }
+
+    const run = b.addRunArtifact(app.exe);
+    run.addFileArg(variant.spv);
+    for (variant.extra_args) |a| run.addArg(a);
+    const run_step = b.step(b.fmt("run-{s}", .{variant.name}), b.fmt("Dispatch the {s} kernel", .{variant.name}));
+    run_step.dependOn(&run.step);
+    app.all.dependOn(&run.step);
+
+    const bench_run = b.addRunArtifact(app.exe);
+    bench_run.addFileArg(variant.spv);
+    for (variant.extra_args) |a| bench_run.addArg(a);
+    bench_run.addArg("--bench");
+    app.bench.dependOn(&bench_run.step);
+}
+
+/// Compile a GLSL compute shader with glslangValidator and validate the
+/// result with spirv-val. `defines` are passed through as `-D` flags so
+/// callers can parameterise a shared shader.comp (see wg_reduce).
+pub fn compileGlsl(
+    b: *std.Build,
+    name: []const u8,
+    source: std.Build.LazyPath,
+    defines: []const []const u8,
+) KernelArtifact {
+    const glsl = b.addSystemCommand(&.{ "glslangValidator", "-V" });
+    for (defines) |d| glsl.addArg(b.fmt("-D{s}", .{d}));
+    glsl.addFileArg(source);
+    glsl.addArg("-o");
+    const out_name = b.fmt("{s}.spv", .{name});
+    const raw_spv = glsl.addOutputFileArg(out_name);
+    return .{ .spv = validateSpv(b, raw_spv, out_name) };
+}
+
+/// Disassemble `spv` (optionally via `spirv-opt -O` first) and install it
+/// under disassembly/<out_name>. The two reduce examples both wanted
+/// this; lives here so they share one implementation.
+pub fn addDisassembly(
+    b: *std.Build,
+    step: *std.Build.Step,
+    spv: std.Build.LazyPath,
+    out_name: []const u8,
+    optimize: bool,
+) void {
+    const source = if (optimize) blk: {
+        const opt = b.addSystemCommand(&.{ "spirv-opt", "--strip-debug", "-O" });
+        opt.addFileArg(spv);
+        opt.addArg("-o");
+        break :blk opt.addOutputFileArg(b.fmt("{s}.spv", .{out_name}));
+    } else spv;
+
+    const dis = b.addSystemCommand(&.{ "spirv-dis", "--no-color" });
+    dis.addFileArg(source);
+    dis.addArg("-o");
+    const out = dis.addOutputFileArg(out_name);
+    const install = b.addInstallFileWithDir(out, .{ .custom = "../disassembly" }, out_name);
+    step.dependOn(&install.step);
 }

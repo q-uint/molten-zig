@@ -37,16 +37,17 @@ pub fn main(init: std.process.Init) !void {
 
 See [examples/vector_multiply](examples/vector_multiply/) for the runnable consumer this snippet was distilled from. Other examples:
 
-- [examples/reduce](examples/reduce/) - single-workgroup sum reduction
-- [examples/wg_reduce](examples/wg_reduce/) - tiled reduction across workgroups, push-constant tail handling
+- [examples/wg_reduce](examples/wg_reduce/) - single-workgroup tree reduction (shared scratch + barriers)
+- [examples/reduce](examples/reduce/) - tiled reduction across workgroups, push-constant `(n, tile)`
 - [examples/matrix_transpose](examples/matrix_transpose/) - shared-memory tile transpose
+- [examples/gemm](examples/gemm/) - f32 GEMM, parity-checked against Accelerate `cblas_sgemm`
 - [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
 
 ## Architecture
 
 ```
 Zig kernel (.zig)
-   |  patched zig build-obj -target spirv64-vulkan
+   |  patched zig build-obj -target spirv32-vulkan
    v
 SPIR-V (.spv)
    |  vkCreateShaderModule
@@ -74,9 +75,10 @@ Then run an example:
 ```sh
 cd examples/vector_multiply
 zig build all                   # validate both kernels, dispatch both through MoltenVK
+zig build bench                 # steady-state timing of both kernels
 ```
 
-`build all` runs the example twice: once with the GLSL-derived `.spv` (the parity baseline), once with the Zig-derived `.spv`. Both must produce element-wise `2x` output.
+`build all` runs the example twice: once with the GLSL-derived `.spv` (the parity baseline), once with the Zig-derived `.spv`. Both must produce element-wise `2x` output. From the repo root, `zig build examples` runs `all` across every example.
 
 ## Kernel target
 

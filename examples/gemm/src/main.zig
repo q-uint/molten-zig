@@ -1,11 +1,12 @@
-// Usage: ./gemm <kernel.spv>
+// Usage: ./gemm <kernel.spv> [--bench]
 //
 // f32 row-major GEMM, square M = N = K. Dispatches the kernel, runs the
 // same multiply through Accelerate's cblas_sgemm, compares element-wise
-// with relative tolerance, and prints GFLOP/s for both.
+// with relative tolerance, and prints GFLOP/s for both. With --bench,
+// follows up with steady-state timing via the shared bench harness.
 
 const std = @import("std");
-const molten = @import("molten");
+const common = @import("common");
 
 const M: u32 = 1024;
 const N: u32 = 1024;
@@ -38,13 +39,9 @@ extern "c" fn cblas_sgemm(
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
 
-    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, alloc);
-    defer arg_it.deinit();
-    _ = arg_it.next() orelse return error.BadArgs;
-    const spv_path = arg_it.next() orelse return error.BadArgs;
-
-    const spv = try std.Io.Dir.cwd().readFileAlloc(init.io, spv_path, alloc, .limited(64 * 1024 * 1024));
-    defer alloc.free(spv);
+    const args = try common.Args.parse(init, alloc);
+    defer args.deinit(alloc);
+    const want_bench = args.rest.len > 0 and std.mem.eql(u8, args.rest[0], "--bench");
 
     const a_host = try alloc.alloc(f32, M * K);
     defer alloc.free(a_host);
@@ -57,21 +54,20 @@ pub fn main(init: std.process.Init) !void {
     for (a_host, 0..) |*p, i| p.* = @sin(@as(f32, @floatFromInt(i)) * 0.001);
     for (b_host, 0..) |*p, i| p.* = @cos(@as(f32, @floatFromInt(i)) * 0.001);
 
-    var ctx = try molten.Context.init(alloc, .{});
-    defer ctx.deinit();
-    std.debug.print("device: {s}\n", .{ctx.deviceName()});
+    var session = try common.Session.open(init, alloc, args.spv_path);
+    defer session.deinit();
 
-    var a_buf = try ctx.createBuffer(f32, M * K);
+    var a_buf = try session.ctx.createBuffer(f32, M * K);
     defer a_buf.deinit();
-    var b_buf = try ctx.createBuffer(f32, K * N);
+    var b_buf = try session.ctx.createBuffer(f32, K * N);
     defer b_buf.deinit();
-    var c_buf = try ctx.createBuffer(f32, M * N);
+    var c_buf = try session.ctx.createBuffer(f32, M * N);
     defer c_buf.deinit();
 
     try a_buf.write(a_host);
     try b_buf.write(b_host);
 
-    var pipeline = try ctx.loadPipeline(spv, .{
+    var pipeline = try session.ctx.loadPipeline(session.spv, .{
         .binding_count = 3,
         .push_constant_size = @sizeOf(Push),
     });
@@ -128,6 +124,18 @@ pub fn main(init: std.process.Init) !void {
             gpu_s * 1000.0, flops / gpu_s / 1e9, cpu_s * 1000.0, flops / cpu_s / 1e9,
         },
     );
+
+    if (!want_bench) return;
+
+    var label_buf: [64]u8 = undefined;
+    _ = try session.runBench(.{
+        .label = common.benchLabel(&label_buf, "gemm", args.spv_path, null),
+        .pipeline = &pipeline,
+        .bindings = &.{ a_buf.bind(), b_buf.bind(), c_buf.bind() },
+        .groups = groups,
+        .push = std.mem.asBytes(&push),
+        .work = .{ .flops = @intFromFloat(flops) },
+    });
 }
 
 fn secondsBetween(start: std.Io.Timestamp, end: std.Io.Timestamp) f64 {

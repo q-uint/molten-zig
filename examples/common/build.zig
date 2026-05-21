@@ -15,4 +15,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mod.addImport("molten", dep_molten.module("molten"));
+
+    const tests = b.addTest(.{ .root_module = mod });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Unit-test the common helpers");
+    test_step.dependOn(&run_tests.step);
 }

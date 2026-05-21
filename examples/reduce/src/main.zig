@@ -1,7 +1,7 @@
-// Usage: ./reduce <kernel.spv> <sum|max>
+// Usage: ./reduce <kernel.spv> <sum|max> [--bench]
 
 const std = @import("std");
-const molten = @import("molten");
+const common = @import("common");
 
 const WORKGROUP_SIZE: u32 = 64;
 const Push = extern struct { n: u32, tile: u32 };
@@ -9,41 +9,83 @@ const Push = extern struct { n: u32, tile: u32 };
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
 
-    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, alloc);
-    defer arg_it.deinit();
-    _ = arg_it.next() orelse return error.BadArgs;
-    const spv_path = arg_it.next() orelse return error.BadArgs;
-    const op_arg = arg_it.next() orelse return error.BadArgs;
+    const args = try common.Args.parse(init, alloc);
+    defer args.deinit(alloc);
+    if (args.rest.len < 1) return error.BadArgs;
+    const op_arg = args.rest[0];
+    const want_bench = args.rest.len > 1 and std.mem.eql(u8, args.rest[1], "--bench");
 
-    const spv = try std.Io.Dir.cwd().readFileAlloc(init.io, spv_path, alloc, .limited(64 * 1024 * 1024));
-    defer alloc.free(spv);
-
-    var ctx = try molten.Context.init(alloc, .{});
-    defer ctx.deinit();
-    std.debug.print("device: {s}\n", .{ctx.deviceName()});
+    var session = try common.Session.open(init, alloc, args.spv_path);
+    defer session.deinit();
 
     if (std.mem.eql(u8, op_arg, "sum")) {
-        try runSum(alloc, &ctx, spv, 1 << 14, 64);
-        try runSum(alloc, &ctx, spv, 1 << 16, 128);
+        try runSum(&session, 1 << 14, 64);
+        try runSum(&session, 1 << 16, 128);
     } else if (std.mem.eql(u8, op_arg, "max")) {
-        try runMax(alloc, &ctx, spv, 1 << 14, 64);
-        try runMax(alloc, &ctx, spv, 1 << 16, 128);
+        try runMax(&session, 1 << 14, 64);
+        try runMax(&session, 1 << 16, 128);
     } else {
         return error.BadArgs;
     }
+
+    if (!want_bench) return;
+    const n: u32 = 1 << 16;
+    const tile: u32 = 128;
+    const partials: u32 = n / tile;
+    if (std.mem.eql(u8, op_arg, "sum")) {
+        try benchOne(u32, &session, op_arg, n, tile, partials);
+    } else {
+        try benchOne(i32, &session, op_arg, n, tile, partials);
+    }
 }
 
-fn runSum(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u32, tile: u32) !void {
-    const input = try alloc.alloc(u32, n);
-    defer alloc.free(input);
+fn benchOne(
+    comptime T: type,
+    session: *common.Session,
+    op_arg: []const u8,
+    n: u32,
+    tile: u32,
+    partials: u32,
+) !void {
+    const input = try session.alloc.alloc(T, n);
+    defer session.alloc.free(input);
+    for (input, 0..) |*p, i| p.* = @intCast(i & 0x7f);
+
+    var in = try session.ctx.createBuffer(T, n);
+    defer in.deinit();
+    var out = try session.ctx.createBuffer(T, partials);
+    defer out.deinit();
+    try in.write(input);
+
+    var pipeline = try session.ctx.loadPipeline(session.spv, .{
+        .binding_count = 2,
+        .push_constant_size = @sizeOf(Push),
+    });
+    defer pipeline.deinit();
+
+    const push = Push{ .n = n, .tile = tile };
+    var label_buf: [64]u8 = undefined;
+    _ = try session.runBench(.{
+        .label = common.benchLabel(&label_buf, "reduce", session.spv_path, op_arg),
+        .pipeline = &pipeline,
+        .bindings = &.{ in.bind(), out.bind() },
+        .groups = .{ partials / WORKGROUP_SIZE, 1, 1 },
+        .push = std.mem.asBytes(&push),
+        .work = .{ .bytes = @as(u64, n) * @sizeOf(T) },
+    });
+}
+
+fn runSum(session: *common.Session, n: u32, tile: u32) !void {
+    const input = try session.alloc.alloc(u32, n);
+    defer session.alloc.free(input);
     var expected: u64 = 0;
     for (input, 0..) |*p, i| {
         p.* = @intCast(i & 0xff);
         expected += p.*;
     }
 
-    const partials = try dispatch(u32, alloc, ctx, spv, input, tile);
-    defer alloc.free(partials);
+    const partials = try dispatch(u32, session, input, tile);
+    defer session.alloc.free(partials);
 
     var got: u64 = 0;
     for (partials) |p| got += p;
@@ -55,9 +97,9 @@ fn runSum(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u3
     std.debug.print("ok: reduce sum u32 n={d} tile={d} -> {d}\n", .{ n, tile, got });
 }
 
-fn runMax(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u32, tile: u32) !void {
-    const input = try alloc.alloc(i32, n);
-    defer alloc.free(input);
+fn runMax(session: *common.Session, n: u32, tile: u32) !void {
+    const input = try session.alloc.alloc(i32, n);
+    defer session.alloc.free(input);
     var expected: i32 = std.math.minInt(i32);
     for (input, 0..) |*p, i| {
         const v: i32 = @as(i32, @intCast(i & 0x7f)) - 64;
@@ -65,8 +107,8 @@ fn runMax(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u3
         expected = @max(expected, v);
     }
 
-    const partials = try dispatch(i32, alloc, ctx, spv, input, tile);
-    defer alloc.free(partials);
+    const partials = try dispatch(i32, session, input, tile);
+    defer session.alloc.free(partials);
 
     var got: i32 = std.math.minInt(i32);
     for (partials) |p| got = @max(got, p);
@@ -80,9 +122,7 @@ fn runMax(alloc: std.mem.Allocator, ctx: *molten.Context, spv: []const u8, n: u3
 
 fn dispatch(
     comptime T: type,
-    alloc: std.mem.Allocator,
-    ctx: *molten.Context,
-    spv: []const u8,
+    session: *common.Session,
     input: []const T,
     tile: u32,
 ) ![]T {
@@ -91,14 +131,14 @@ fn dispatch(
     const partials = n / tile;
     if (partials % WORKGROUP_SIZE != 0) return error.InvalidArgument;
 
-    var in = try ctx.createBuffer(T, input.len);
+    var in = try session.ctx.createBuffer(T, input.len);
     defer in.deinit();
-    var out = try ctx.createBuffer(T, partials);
+    var out = try session.ctx.createBuffer(T, partials);
     defer out.deinit();
 
     try in.write(input);
 
-    var pipeline = try ctx.loadPipeline(spv, .{
+    var pipeline = try session.ctx.loadPipeline(session.spv, .{
         .binding_count = 2,
         .push_constant_size = @sizeOf(Push),
     });
@@ -110,5 +150,5 @@ fn dispatch(
         .push = std.mem.asBytes(&push),
     });
 
-    return try out.read(alloc);
+    return try out.read(session.alloc);
 }
