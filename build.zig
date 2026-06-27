@@ -68,6 +68,38 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_tests.step);
 
+    // Device-driven round-trip tests. They embed a kernel compiled by the
+    // patched compiler, so they only register when it is present; each test
+    // skips itself when no Vulkan runtime is available.
+    const patched_rel = "vendor/zig/zig-out/bin/zig";
+    if (b.root.root_dir.handle.access(b.graph.io, patched_rel, .{})) |_| {
+        const patched_zig = b.root.joinString(b.allocator, patched_rel) catch @panic("OOM");
+        const kc = b.addSystemCommand(&.{
+            patched_zig, "build-obj", "-target", "spirv32-vulkan",
+            "-mcpu=generic+v1_4+variable_pointers", "-fno-llvm", "-fno-lld", "-fstrip", "-ODebug",
+        });
+        kc.addArgs(&.{ "--dep", "gpu" });
+        kc.addPrefixedFileArg("-Mroot=", b.path("tests/kernels/double.zig"));
+        const raw_spv = kc.addPrefixedOutputFileArg("-femit-bin=", "double.spv");
+        kc.addPrefixedFileArg("-Mgpu=", b.path("src/kernel/gpu.zig"));
+        const double_spv = validateSpv(b, raw_spv, "double.spv");
+
+        const rt_mod = b.createModule(.{
+            .root_source_file = b.path("tests/roundtrip.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        rt_mod.addImport("molten", molten);
+        rt_mod.addImport("c", vk_mod);
+        rt_mod.addAnonymousImport("double_spv", .{ .root_source_file = double_spv });
+        rt_mod.linkSystemLibrary("vulkan", .{});
+        rt_mod.addIncludePath(.{ .cwd_relative = vulkan_include });
+        rt_mod.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
+        const rt_tests = b.addTest(.{ .root_module = rt_mod });
+        test_step.dependOn(&b.addRunArtifact(rt_tests).step);
+    } else |_| {}
+
     // Meta-steps that run `zig build all` / `zig build bench` in every
     // example package. Each example is an independent package with its
     // own build.zig consuming molten as a path dependency, so we shell
@@ -83,7 +115,7 @@ fn registerExamplesSteps(b: *std.Build) !void {
     const examples_step = b.step("examples", "Run `zig build all` in every example");
     const bench_step = b.step("examples-bench", "Run `zig build bench` in every example that has one");
     const io = b.graph.io;
-    var examples_dir = try b.build_root.handle.openDir(io, "examples", .{ .iterate = true });
+    var examples_dir = try b.root.root_dir.handle.openDir(io, "examples", .{ .iterate = true });
     defer examples_dir.close(io);
     var it = examples_dir.iterate();
     while (try it.next(io)) |entry| {
@@ -95,7 +127,7 @@ fn registerExamplesSteps(b: *std.Build) !void {
         const has_bench = !std.mem.eql(u8, entry.name, "chain");
 
         const ex_path = b.pathJoin(&.{ "examples", entry.name });
-        b.build_root.handle.access(io, b.pathJoin(&.{ ex_path, "build.zig" }), .{}) catch continue;
+        b.root.root_dir.handle.access(io, b.pathJoin(&.{ ex_path, "build.zig" }), .{}) catch continue;
 
         const run_all = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "all" });
         run_all.setCwd(b.path(ex_path));
@@ -128,10 +160,11 @@ pub const KernelImport = struct {
 pub const TargetBits = enum { @"32", @"64" };
 
 pub const CompileOptions = struct {
-    /// Named modules importable from the kernel via `@import("<name>")`.
-    /// The kernel compile is a raw `zig build-obj`, so it does not see the
-    /// host build's modules; declare any cross-package imports here. Also
-    /// covers cache invalidation: editing the imported file rebuilds.
+    /// Extra named modules importable from the kernel via `@import("<name>")`,
+    /// on top of the always-present `gpu` module. The kernel compile is a raw
+    /// `zig build-obj`, so it does not see the host build's modules; declare
+    /// any cross-package imports here. Also covers cache invalidation: editing
+    /// the imported file rebuilds.
     imports: []const KernelImport = &.{},
     /// Debug mode wraps integer ops in overflow checks; ReleaseFast skips them.
     optimize: std.builtin.OptimizeMode = .Debug,
@@ -157,8 +190,8 @@ pub fn compileKernel(
     kernel_path: std.Build.LazyPath,
     opts: CompileOptions,
 ) KernelArtifact {
-    const patched_zig = dep.path("vendor/zig/zig-out/bin/zig").getPath(b);
-    std.Io.Dir.cwd().access(b.graph.io, patched_zig, .{}) catch
+    const patched_zig = dep.builder.root.joinString(b.allocator, "vendor/zig/zig-out/bin/zig") catch @panic("OOM");
+    dep.builder.root.root_dir.handle.access(b.graph.io, "vendor/zig/zig-out/bin/zig", .{}) catch
         fatal("patched zig missing at {s} - run scripts/build-zig.sh in the molten dep first", .{patched_zig});
 
     const opt_flag = switch (opts.optimize) {
@@ -184,16 +217,29 @@ pub fn compileKernel(
         "-fstrip",
         opt_flag,
     });
-    if (opts.variable_pointers) compile.addArg("-mcpu=generic+variable_pointers");
+    // SPIR-V 1.4 is the floor: it legalizes storage buffers in the OpEntryPoint
+    // interface list (1.3 restricts it to Input/Output). variable_pointers is
+    // needed to index runtime arrays in storage_buffer addrspace.
+    if (opts.variable_pointers)
+        compile.addArg("-mcpu=generic+v1_4+variable_pointers")
+    else
+        compile.addArg("-mcpu=generic+v1_4");
+
+    // The `gpu` module (molten's kernel-side SPIR-V helpers) is always
+    // available to kernels via `@import("gpu")`, plus any caller imports.
+    const gpu_import: KernelImport = .{ .name = "gpu", .path = dep.path("src/kernel/gpu.zig") };
 
     // Wire imports as named modules. `--dep` populates the next module's
     // import table, then `-Mroot=<kernel>` defines the root module that
     // consumes them. `-femit-bin` attaches to the root module, so it must
-    // come after the root `-M`.
+    // come after the root `-M`. Each named module needs its own `-M`; the
+    // gpu module imports std, which build-obj provides implicitly.
+    compile.addArgs(&.{ "--dep", gpu_import.name });
     for (opts.imports) |imp| compile.addArgs(&.{ "--dep", imp.name });
     compile.addPrefixedFileArg("-Mroot=", kernel_path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});
     const raw_spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
+    compile.addPrefixedFileArg(b.fmt("-M{s}=", .{gpu_import.name}), gpu_import.path);
     for (opts.imports) |imp| compile.addPrefixedFileArg(b.fmt("-M{s}=", .{imp.name}), imp.path);
 
     if (!opts.validate) return .{ .spv = raw_spv };

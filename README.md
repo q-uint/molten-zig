@@ -86,7 +86,7 @@ Kernels default to `spirv32-vulkan`. GLSL/Vulkan compute is 32-bit by convention
 
 ## API surface
 
-- `Context` - device/queue setup, buffer + pipeline factories, submission entry points (`submit`, `submitToFrame`).
+- `Context` - device/queue setup, buffer + pipeline factories, and `submit` (waits, signals, timeline values, optional fence).
 - `Buffer` - host-visible storage buffer with `write`/`read`/`bind`. Lifetime is the caller's responsibility; must outlive any in-flight dispatch that references it.
 - `Pipeline` - compute pipeline with a built-in descriptor-set ring (size configurable via `PipelineOptions.descriptor_ring_size`). `dispatch` is the one-shot path; `record` writes into a caller-owned `CommandBuffer`. Push constants are supported via `PipelineOptions.push_constant_size` and `DispatchOptions.push`.
 - `CommandBuffer` - explicit recording for batching multiple dispatches in one submission.

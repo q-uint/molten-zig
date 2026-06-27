@@ -1,4 +1,4 @@
-const gpu = @import("std").gpu;
+const gpu = @import("gpu");
 
 const Buf = extern struct { data: [1]u32 };
 
@@ -7,9 +7,7 @@ const buf = gpu.storageBuffer(Buf, 0, 0, "buf");
 var scratch: [1]u32 addrspace(.shared) = undefined;
 
 pub const Kernel = struct {
-    pub fn entry() callconv(.spirv_kernel) void {
-        gpu.executionMode(entry, .{ .local_size = .{ .x = 1, .y = 1, .z = 1 } });
-
+    pub fn entry() callconv(.{ .spirv_kernel = .{ .x = 1, .y = 1, .z = 1 } }) void {
         scratch[0] = buf.*.data[0];
 
         gpu.controlBarrier(.workgroup, .workgroup, .{
