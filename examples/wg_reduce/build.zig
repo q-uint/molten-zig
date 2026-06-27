@@ -15,8 +15,8 @@ pub fn build(b: *std.Build) !void {
     const max_zig = molten_build.compileKernel(b, app.dep, "max_zig", b.path("src/kernel_max.zig"), kopts);
 
     const shader = b.path("src/shader.comp");
-    const sum_glsl = molten_build.compileGlsl(b, "sum_glsl", shader, &.{ "T=uint", "OP(a,b)=((a)+(b))", "IDENTITY=0u" });
-    const max_glsl = molten_build.compileGlsl(b, "max_glsl", shader, &.{ "T=int", "OP(a,b)=max(a,b)", "IDENTITY=(-2147483648)" });
+    const sum_glsl = molten_build.compileGlsl(b, app.dep, "sum_glsl", shader, &.{ "T=uint", "OP(a,b)=((a)+(b))", "IDENTITY=0u" });
+    const max_glsl = molten_build.compileGlsl(b, app.dep, "max_glsl", shader, &.{ "T=int", "OP(a,b)=max(a,b)", "IDENTITY=(-2147483648)" });
 
     const dis_step = b.step("dis", "Disassemble each .spv (raw and spirv-opt -O) into disassembly/");
     inline for (.{ "sum_zig", "max_zig", "sum_glsl", "max_glsl" }, .{ sum_zig, max_zig, sum_glsl, max_glsl }) |n, k| {

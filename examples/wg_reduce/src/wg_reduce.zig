@@ -4,7 +4,7 @@
 // over the workgroup writes one output. T, op, n, and workgroup_size
 // are all comptime - each instantiation is its own SPIR-V module.
 
-const gpu = @import("std").gpu;
+const gpu = @import("gpu");
 
 pub const Op = enum {
     add,
@@ -103,11 +103,7 @@ pub fn WgReduce(
 
         pub const groups: [3]u32 = .{ 1, 1, 1 };
 
-        pub fn main() callconv(.spirv_kernel) void {
-            gpu.executionMode(main, .{
-                .local_size = .{ .x = workgroup_size, .y = 1, .z = 1 },
-            });
-
+        pub fn main() callconv(.{ .spirv_kernel = .{ .x = workgroup_size, .y = 1, .z = 1 } }) void {
             const lid = gpu.local_invocation_id[0];
             const base = lid * tile;
 

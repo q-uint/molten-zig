@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) !void {
         .variable_pointers = true,
         .optimize = .ReleaseFast,
     });
-    const glsl_k = molten_build.compileGlsl(b, "shader", b.path("src/shader.comp"), &.{});
+    const glsl_k = molten_build.compileGlsl(b, app.dep, "shader", b.path("src/shader.comp"), &.{});
 
     molten_build.addRunAndBench(app, .{ .name = "zig", .spv = zig_k.spv, .install_name = "kernel.spv" });
     molten_build.addRunAndBench(app, .{ .name = "glsl", .spv = glsl_k.spv, .install_name = "shader.spv" });

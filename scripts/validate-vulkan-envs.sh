@@ -27,15 +27,17 @@ for env in $must_pass; do
     fi
 done
 
+# 1.0/1.1 may reject a SPIR-V 1.4 module on the version ceiling (our Zig
+# kernels) or accept a lower-versioned one (glslang output). Both are fine;
+# only a non-version failure is a real defect.
 for env in $expect_ceiling; do
     out=$(spirv-val --target-env "$env" "$spv" 2>&1)
     if [ -z "$out" ]; then
-        echo "  $env: PASS (unexpected - this env should reject our SPIR-V 1.4 floor)" >&2
-        rc=1
+        echo "  $env: PASS"
     elif echo "$out" | grep -q "Invalid SPIR-V binary version"; then
-        echo "  $env: expected version-ceiling fail (ok)"
+        echo "  $env: version-ceiling fail (ok)"
     else
-        echo "  $env: FAIL for a non-version reason (unexpected)" >&2
+        echo "  $env: FAIL for a non-version reason" >&2
         echo "$out" | sed 's/^/    /' >&2
         rc=1
     fi

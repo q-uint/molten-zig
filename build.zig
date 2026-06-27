@@ -229,18 +229,23 @@ pub fn compileKernel(
     // available to kernels via `@import("gpu")`, plus any caller imports.
     const gpu_import: KernelImport = .{ .name = "gpu", .path = dep.path("src/kernel/gpu.zig") };
 
-    // Wire imports as named modules. `--dep` populates the next module's
-    // import table, then `-Mroot=<kernel>` defines the root module that
-    // consumes them. `-femit-bin` attaches to the root module, so it must
-    // come after the root `-M`. Each named module needs its own `-M`; the
-    // gpu module imports std, which build-obj provides implicitly.
+    // Wire imports as named modules. The `--dep` flags preceding each `-M`
+    // populate that module's import table. The root kernel sees `gpu` plus
+    // every caller import; each caller import also sees `gpu` so shared kernel
+    // modules can `@import("gpu")` too. `-femit-bin` attaches to the root
+    // module, so it comes after the root `-M`. The gpu module imports std,
+    // which build-obj provides implicitly.
     compile.addArgs(&.{ "--dep", gpu_import.name });
     for (opts.imports) |imp| compile.addArgs(&.{ "--dep", imp.name });
     compile.addPrefixedFileArg("-Mroot=", kernel_path);
     const out_name = b.fmt("{s}.spv", .{kernel_name});
     const raw_spv = compile.addPrefixedOutputFileArg("-femit-bin=", out_name);
+    compile.addArgs(&.{ "--dep", gpu_import.name });
     compile.addPrefixedFileArg(b.fmt("-M{s}=", .{gpu_import.name}), gpu_import.path);
-    for (opts.imports) |imp| compile.addPrefixedFileArg(b.fmt("-M{s}=", .{imp.name}), imp.path);
+    for (opts.imports) |imp| {
+        compile.addArgs(&.{ "--dep", gpu_import.name });
+        compile.addPrefixedFileArg(b.fmt("-M{s}=", .{imp.name}), imp.path);
+    }
 
     if (!opts.validate) return .{ .spv = raw_spv };
     return .{ .spv = validateSpv(b, dep.path("scripts/validate-vulkan-envs.sh"), raw_spv, out_name) };
@@ -388,6 +393,7 @@ pub fn addRunAndBench(app: ExampleApp, variant: Variant) void {
 /// callers can parameterise a shared shader.comp (see wg_reduce).
 pub fn compileGlsl(
     b: *std.Build,
+    dep: *std.Build.Dependency,
     name: []const u8,
     source: std.Build.LazyPath,
     defines: []const []const u8,
@@ -398,7 +404,7 @@ pub fn compileGlsl(
     glsl.addArg("-o");
     const out_name = b.fmt("{s}.spv", .{name});
     const raw_spv = glsl.addOutputFileArg(out_name);
-    return .{ .spv = validateSpv(b, raw_spv, out_name) };
+    return .{ .spv = validateSpv(b, dep.path("scripts/validate-vulkan-envs.sh"), raw_spv, out_name) };
 }
 
 /// Disassemble `spv` (optionally via `spirv-opt -O` first) and install it

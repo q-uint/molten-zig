@@ -1,4 +1,4 @@
-const gpu = @import("std").gpu;
+const gpu = @import("gpu");
 
 pub const Op = enum {
     add,
@@ -83,16 +83,14 @@ pub fn Reduce(
         );
     }
 
+    const Buf = extern struct { data: @SpirvType(.{ .runtime_array = T }) };
+
     return struct {
-        const in_buf = gpu.runtimeArray(T, 0, 0, "in_buf");
-        const out_buf = gpu.runtimeArray(T, 0, 1, "out_buf");
+        const in_buf = @extern(*addrspace(.storage_buffer) const Buf, .{ .name = "in_buf", .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } } });
+        const out_buf = @extern(*addrspace(.storage_buffer) Buf, .{ .name = "out_buf", .decoration = .{ .descriptor = .{ .set = 0, .binding = 1 } } });
         const push = gpu.pushConstant(Push, "push");
 
-        pub fn main() callconv(.spirv_kernel) void {
-            gpu.executionMode(main, .{
-                .local_size = .{ .x = workgroup_size, .y = 1, .z = 1 },
-            });
-
+        pub fn main() callconv(.{ .spirv_kernel = .{ .x = workgroup_size, .y = 1, .z = 1 } }) void {
             const n = push.*.n;
             const tile = push.*.tile;
             const partials = n / tile;
@@ -103,9 +101,9 @@ pub fn Reduce(
             var acc: T = identity(T, op);
             var k: u32 = 0;
             while (k < tile) : (k += 1) {
-                acc = apply(T, op, acc, in_buf.*.data[base + k]);
+                acc = apply(T, op, acc, (&in_buf.data)[base + k]);
             }
-            out_buf.*.data[gid] = acc;
+            (&out_buf.data)[gid] = acc;
         }
     };
 }
