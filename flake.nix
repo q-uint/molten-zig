@@ -41,6 +41,11 @@
       moltenShell = pkgs.mkShell (
         vulkanEnv
         // {
+          # LLVM .td source for scripts/regen-cpu-features.sh. Matches the
+          # linked LLVM, so no manual version pin to keep in sync.
+          LLVM_SRC = "${pkgs.llvmPackages_22.llvm.monorepoSrc}";
+          LLVM_VERSION = pkgs.llvmPackages_22.llvm.version;
+
           buildInputs = vulkanInputs ++ [
             pkgs.cmake
             pkgs.ninja
@@ -90,7 +95,6 @@
 
       devShells.${system} = {
         default = moltenShell;
-        zig-dev = moltenShell; # kept for back-compat with `nix develop .#zig-dev`
       };
     };
 }

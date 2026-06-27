@@ -1,10 +1,5 @@
 [submodule "vendor/zig"]
 	path = vendor/zig
-	url = git@codeberg.org:quint/zig.git
+	url = git@codeberg.org:quint/zig-spirv.git
 	branch = spirv-fixes
-	ignore = dirty
-[submodule "vendor/llvm-project"]
-	path = vendor/llvm-project
-	url = https://github.com/llvm/llvm-project.git
-	shallow = true
 	ignore = dirty
