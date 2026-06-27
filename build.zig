@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) !void {
         kc.addPrefixedFileArg("-Mroot=", b.path("tests/kernels/double.zig"));
         const raw_spv = kc.addPrefixedOutputFileArg("-femit-bin=", "double.spv");
         kc.addPrefixedFileArg("-Mgpu=", b.path("src/kernel/gpu.zig"));
-        const double_spv = validateSpv(b, raw_spv, "double.spv");
+        const double_spv = validateSpv(b, b.path("scripts/validate-vulkan-envs.sh"), raw_spv, "double.spv");
 
         const rt_mod = b.createModule(.{
             .root_source_file = b.path("tests/roundtrip.zig"),
@@ -243,19 +243,25 @@ pub fn compileKernel(
     for (opts.imports) |imp| compile.addPrefixedFileArg(b.fmt("-M{s}=", .{imp.name}), imp.path);
 
     if (!opts.validate) return .{ .spv = raw_spv };
-    return .{ .spv = validateSpv(b, raw_spv, out_name) };
+    return .{ .spv = validateSpv(b, dep.path("scripts/validate-vulkan-envs.sh"), raw_spv, out_name) };
 }
 
-/// Run spirv-val on `spv` and return a LazyPath that consumers must use
-/// instead. Any step depending on the returned path transitively depends on
-/// validation succeeding, so an invalid module fails the build before
-/// anything downstream (install, run, disassemble) gets to see it.
+/// Validate `spv` against every major Vulkan env and return a LazyPath that
+/// consumers must use instead. Any step depending on the returned path
+/// transitively depends on validation succeeding, so an invalid module fails
+/// the build before anything downstream (install, run, disassemble) sees it.
+/// The sweep matches what the Vulkan loader / MoltenVK enforces at
+/// vkCreateShaderModule; bare spirv-val misses Vulkan-only rules such as the
+/// ban on OpCapability Linkage. vulkan1.0/1.1 are expected to reject our
+/// SPIR-V 1.4 floor on the version ceiling; the script asserts exactly that.
 pub fn validateSpv(
     b: *std.Build,
+    checker: std.Build.LazyPath,
     spv: std.Build.LazyPath,
     basename: []const u8,
 ) std.Build.LazyPath {
-    const validate = b.addSystemCommand(&.{"spirv-val"});
+    const validate = b.addSystemCommand(&.{"bash"});
+    validate.addFileArg(checker);
     validate.addFileArg(spv);
 
     const wf = b.addWriteFiles();

@@ -1,7 +1,7 @@
 // NxN f32 matrix transpose. LocalSize 1 1 1; host dispatches (N, N, 1) -
 // the 2D dispatch shape is the point of this example.
 
-const gpu = @import("std").gpu;
+const gpu = @import("gpu");
 
 const N = 64;
 const Buf = extern struct { data: [N * N]f32 };
@@ -9,7 +9,7 @@ const Buf = extern struct { data: [N * N]f32 };
 const in_buf = gpu.storageBuffer(Buf, 0, 0, "in_buf");
 const out_buf = gpu.storageBuffer(Buf, 0, 1, "out_buf");
 
-export fn main() callconv(.spirv_kernel) void {
+export fn main() callconv(.{ .spirv_kernel = .{ .x = 1, .y = 1, .z = 1 } }) void {
     const x = gpu.global_invocation_id[0];
     const y = gpu.global_invocation_id[1];
     if (x >= N or y >= N) return;
