@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) !void {
         "bindings",
         "storage_array",
         "runtime_array",
+        "atomics",
     };
 
     const test_step = b.step("test-spirv", "Compile and validate every spirv smoke kernel");

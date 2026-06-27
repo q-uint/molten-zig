@@ -73,17 +73,6 @@ pub fn build(b: *std.Build) !void {
     // skips itself when no Vulkan runtime is available.
     const patched_rel = "vendor/zig/zig-out/bin/zig";
     if (b.root.root_dir.handle.access(b.graph.io, patched_rel, .{})) |_| {
-        const patched_zig = b.root.joinString(b.allocator, patched_rel) catch @panic("OOM");
-        const kc = b.addSystemCommand(&.{
-            patched_zig, "build-obj", "-target", "spirv32-vulkan",
-            "-mcpu=generic+v1_4+variable_pointers", "-fno-llvm", "-fno-lld", "-fstrip", "-ODebug",
-        });
-        kc.addArgs(&.{ "--dep", "gpu" });
-        kc.addPrefixedFileArg("-Mroot=", b.path("tests/kernels/double.zig"));
-        const raw_spv = kc.addPrefixedOutputFileArg("-femit-bin=", "double.spv");
-        kc.addPrefixedFileArg("-Mgpu=", b.path("src/kernel/gpu.zig"));
-        const double_spv = validateSpv(b, b.path("scripts/validate-vulkan-envs.sh"), raw_spv, "double.spv");
-
         const rt_mod = b.createModule(.{
             .root_source_file = b.path("tests/roundtrip.zig"),
             .target = target,
@@ -92,7 +81,16 @@ pub fn build(b: *std.Build) !void {
         });
         rt_mod.addImport("molten", molten);
         rt_mod.addImport("c", vk_mod);
-        rt_mod.addAnonymousImport("double_spv", .{ .root_source_file = double_spv });
+        // Each test kernel compiled by the patched compiler and embedded under
+        // its import name. Add a kernel by appending one tuple here.
+        const test_kernels = [_]struct { name: []const u8, src: []const u8 }{
+            .{ .name = "double_spv", .src = "tests/kernels/double.zig" },
+            .{ .name = "atomic_sum_spv", .src = "tests/kernels/atomic_sum.zig" },
+        };
+        for (test_kernels) |k| {
+            const spv = testKernelSpv(b, k.src);
+            rt_mod.addAnonymousImport(k.name, .{ .root_source_file = spv });
+        }
         rt_mod.linkSystemLibrary("vulkan", .{});
         rt_mod.addIncludePath(.{ .cwd_relative = vulkan_include });
         rt_mod.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
@@ -272,6 +270,24 @@ pub fn validateSpv(
     const wf = b.addWriteFiles();
     wf.step.dependOn(&validate.step);
     return wf.addCopyFile(spv, basename);
+}
+
+/// Compile a root-package test kernel with the patched compiler and validate
+/// it. Mirrors compileKernel but resolves the patched zig via b.root, since the
+/// molten root build has no molten dependency handle to thread through.
+fn testKernelSpv(b: *std.Build, src_rel: []const u8) std.Build.LazyPath {
+    const patched_zig = b.root.joinString(b.allocator, "vendor/zig/zig-out/bin/zig") catch @panic("OOM");
+    const basename = b.fmt("{s}.spv", .{std.fs.path.stem(src_rel)});
+    const kc = b.addSystemCommand(&.{
+        patched_zig, "build-obj", "-target", "spirv32-vulkan",
+        "-mcpu=generic+v1_4+variable_pointers", "-fno-llvm", "-fno-lld", "-fstrip", "-ODebug",
+    });
+    kc.addArgs(&.{ "--dep", "gpu" });
+    kc.addPrefixedFileArg("-Mroot=", b.path(src_rel));
+    const raw_spv = kc.addPrefixedOutputFileArg("-femit-bin=", basename);
+    kc.addArgs(&.{ "--dep", "gpu" });
+    kc.addPrefixedFileArg("-Mgpu=", b.path("src/kernel/gpu.zig"));
+    return validateSpv(b, b.path("scripts/validate-vulkan-envs.sh"), raw_spv, basename);
 }
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {

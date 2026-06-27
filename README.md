@@ -43,6 +43,47 @@ See [examples/vector_multiply](examples/vector_multiply/) for the runnable consu
 - [examples/gemm](examples/gemm/) - f32 GEMM, parity-checked against Accelerate `cblas_sgemm`
 - [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
 
+## Writing a kernel
+
+Kernels `@import("gpu")` for the SPIR-V builtins and helpers (the build wires this module in automatically). Workgroup size is the entry point's calling convention; buffers are `@extern` globals decorated with a descriptor set/binding.
+
+```zig
+const gpu = @import("gpu");
+
+const N: u32 = 1024;
+const Buf = extern struct { data: [N]f32 };
+
+const in_buf = gpu.storageBuffer(Buf, 0, 0, "in_buf");
+const out_buf = gpu.storageBuffer(Buf, 0, 1, "out_buf");
+
+export fn main() callconv(.{ .spirv_kernel = .{ .x = 64, .y = 1, .z = 1 } }) void {
+    const i = gpu.global_invocation_id[0];
+    if (i >= N) return;
+    out_buf.*.data[i] = in_buf.*.data[i] * 2.0;
+}
+```
+
+`gpu` provides:
+
+- Builtins: `global_invocation_id`, `local_invocation_id`, `workgroup_id`, `num_workgroups`.
+- Buffers: `storageBuffer`, `uniformBuffer`, `pushConstant` (typed `@extern` with `descriptor = .{ set, binding }`).
+- Barriers: `controlBarrier`, `memoryBarrier`, `workgroupBarrier`, plus `Scope`/`MemorySemantics`.
+- Atomics: `atomicAdd`, `atomicMax`, `atomicMin`, `atomicExchange` over a `*addrspace(.storage_buffer)` integer (device scope, relaxed).
+
+Runtime-sized buffers use the `@SpirvType` builtin, indexed through a pointer to the array field (needs `CompileOptions.variable_pointers`):
+
+```zig
+const Buf = extern struct { data: @SpirvType(.{ .runtime_array = f32 }) };
+const buf = @extern(*addrspace(.storage_buffer) Buf, .{
+    .name = "buf",
+    .decoration = .{ .descriptor = .{ .set = 0, .binding = 0 } },
+});
+// ...
+(&buf.data)[i] = value;
+```
+
+Shared workgroup memory is a `var ... addrspace(.shared)` global; see [examples/wg_reduce](examples/wg_reduce/) and [examples/gemm](examples/gemm/).
+
 ## Architecture
 
 ```
@@ -82,7 +123,7 @@ zig build bench                 # steady-state timing of both kernels
 
 ## Kernel target
 
-Kernels default to `spirv32-vulkan`. GLSL/Vulkan compute is 32-bit by convention and MoltenVK targets a 32-bit Metal model; spirv64 just makes Sema coerce every index to `u64` and emit pointless widening. Switch via `CompileOptions.target_bits = .@"64"` for buffer device addresses or 64-bit atomics.
+Kernels default to `spirv32-vulkan`. GLSL/Vulkan compute is 32-bit by convention and MoltenVK targets a 32-bit Metal model; spirv64 just makes Sema coerce every index to `u64` and emit pointless widening. Switch via `CompileOptions.target_bits = .@"64"` for buffer device addresses or 64-bit-wide atomics (32-bit atomics work on the default target).
 
 ## API surface
 
@@ -98,7 +139,7 @@ Tunables (override by declaring `pub const molten_options: molten.Options = .{ .
 
 ## Scope
 
-In scope: compute pipelines built from a single SPIR-V module, storage buffers in descriptor set 0, push constants, explicit command-buffer recording, and CPU/GPU sync via fences and binary or timeline semaphores. Enough to dispatch one or many kernels per frame and chain their results.
+In scope: compute pipelines built from a single SPIR-V module, storage buffers (fixed-size or `@SpirvType` runtime arrays) in descriptor set 0, uniform buffers, push constants, shared workgroup memory, barriers, integer atomics, explicit command-buffer recording, and CPU/GPU sync via fences and binary or timeline semaphores. Enough to dispatch one or many kernels per frame and chain their results.
 
 Out of scope (for now): graphics pipelines, images and samplers, multiple descriptor sets, specialization constants, multi-queue submission, and presentation/swapchains. The library is a thin layer over Vulkan compute - it doesn't try to hide Vulkan, just to make the common compute paths typed and pleasant from Zig.
 

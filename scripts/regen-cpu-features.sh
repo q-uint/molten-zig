@@ -34,8 +34,8 @@ fi
 echo "==> using LLVM source ${LLVM_VERSION:-?} at $LLVMSRC"
 
 cd "$ZIGDIR"
+trap 'rm -f "$TOOL" "$TOOL.o"' EXIT
 "$STAGE3" build-exe tools/update_cpu_features.zig -OReleaseFast
 "$TOOL" "$TBLGEN" "$LLVMSRC" "$ZIGDIR" "${1:-}"
-rm -f "$TOOL" "$TOOL.o"
 
 echo "==> regenerated lib/std/Target/${1:-<all>}.zig"

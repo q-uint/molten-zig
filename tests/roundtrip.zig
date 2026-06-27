@@ -2,6 +2,7 @@ const std = @import("std");
 const molten = @import("molten");
 
 const double_spv = @embedFile("double_spv");
+const atomic_sum_spv = @embedFile("atomic_sum_spv");
 
 const N: usize = 256;
 
@@ -54,6 +55,25 @@ test "dispatch doubles every element" {
     var result: [N]f32 = undefined;
     try out.readInto(&result);
     for (0..N) |i| try std.testing.expectEqual(input[i] * 2.0, result[i]);
+}
+
+test "atomicAdd accumulates across all lanes" {
+    var ctx = try initContextOrSkip();
+    defer ctx.deinit();
+
+    var counter = try ctx.createBuffer(u32, 1);
+    defer counter.deinit();
+    try counter.write(&.{0});
+
+    var pipeline = try ctx.loadPipeline(atomic_sum_spv, .{ .binding_count = 1 });
+    defer pipeline.deinit();
+
+    // 256 lanes/workgroup, 4 workgroups -> 1024 atomic increments of one cell.
+    try pipeline.dispatch(&.{counter.bind()}, .{ .groups = .{ 4, 1, 1 } });
+
+    var result: [1]u32 = undefined;
+    try counter.readInto(&result);
+    try std.testing.expectEqual(@as(u32, 1024), result[0]);
 }
 
 test "device-local buffer init copies through staging" {

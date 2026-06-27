@@ -15,6 +15,13 @@ fi
 mkdir -p "$BUILD"
 cd "$BUILD"
 
+# A CMakeCache pinned to a different source dir (moved/copied checkout) makes
+# ninja fail confusingly; treat it as stale and reconfigure from scratch.
+if [ -f CMakeCache.txt ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$ZIGDIR" CMakeCache.txt; then
+  echo "==> stale CMakeCache (source dir changed); reconfiguring"
+  rm -rf CMakeCache.txt CMakeFiles
+fi
+
 if [ ! -f CMakeCache.txt ]; then
   cmake .. \
     -GNinja \
