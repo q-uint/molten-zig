@@ -1,10 +1,10 @@
 .{
-    .name = .molten_examples_common,
+    .name = .spritz_examples_common,
     .version = "0.0.0",
-    .fingerprint = 0x60af6a6f9aa1b486,
+    .fingerprint = 0x7de4de506d45c4b7,
     .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
     .dependencies = .{
-        .molten = .{ .path = "../.." },
+        .spritz = .{ .path = "../.." },
     },
     .paths = .{
         "build.zig",

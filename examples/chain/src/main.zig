@@ -4,7 +4,7 @@
 // a Timeline for inter-pass sync; --binary uses Semaphore + Fence.
 
 const std = @import("std");
-const molten = @import("molten");
+const spritz = @import("spritz");
 
 const WORKGROUP_SIZE: u32 = 64;
 const N: u32 = 1 << 14;
@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     const spv = try std.Io.Dir.cwd().readFileAlloc(init.io, spv_path, alloc, .limited(64 * 1024 * 1024));
     defer alloc.free(spv);
 
-    var ctx = try molten.Context.init(alloc, .{});
+    var ctx = try spritz.Context.init(alloc, .{});
     defer ctx.deinit();
     std.debug.print("device: {s}\n", .{ctx.deviceName()});
 
@@ -62,17 +62,17 @@ pub fn main(init: std.process.Init) !void {
     });
     defer pipeline.deinit();
 
-    var frames: [FRAMES]molten.FramePool = undefined;
+    var frames: [FRAMES]spritz.FramePool = undefined;
     var frames_inited: usize = 0;
     defer for (frames[0..frames_inited]) |*f| f.deinit();
     while (frames_inited < FRAMES) : (frames_inited += 1) {
-        frames[frames_inited] = try molten.FramePool.init(&ctx, .{ .capacity = 2 });
+        frames[frames_inited] = try spritz.FramePool.init(&ctx, .{ .capacity = 2 });
     }
 
     // Per-frame inter-pass sync; safe to reuse because the frame's fence
     // gates each iteration on the prior submission completing.
-    var sems: [FRAMES]molten.Semaphore = undefined;
-    var tls: [FRAMES]molten.Timeline = undefined;
+    var sems: [FRAMES]spritz.Semaphore = undefined;
+    var tls: [FRAMES]spritz.Timeline = undefined;
     var sync_inited: usize = 0;
     defer if (use_binary) {
         for (sems[0..sync_inited]) |*s| s.deinit();
@@ -81,11 +81,11 @@ pub fn main(init: std.process.Init) !void {
     };
     if (use_binary) {
         while (sync_inited < FRAMES) : (sync_inited += 1) {
-            sems[sync_inited] = try molten.Semaphore.init(&ctx);
+            sems[sync_inited] = try spritz.Semaphore.init(&ctx);
         }
     } else {
         while (sync_inited < FRAMES) : (sync_inited += 1) {
-            tls[sync_inited] = try molten.Timeline.init(&ctx, 0);
+            tls[sync_inited] = try spritz.Timeline.init(&ctx, 0);
         }
     }
 
@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
             try ctx.submit(.{ .cmd = &cmd1, .signals = &.{&sems[slot]} });
             try ctx.submit(.{
                 .cmd = &cmd2,
-                .waits = &.{.{ .semaphore = &sems[slot], .stage = molten.PipelineStage.compute_shader }},
+                .waits = &.{.{ .semaphore = &sems[slot], .stage = spritz.PipelineStage.compute_shader }},
                 .fence = &frame.fence,
             });
         } else {
@@ -136,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
                 .timeline_waits = &.{.{
                     .timeline = &tls[slot],
                     .value = v1,
-                    .stage = molten.PipelineStage.compute_shader,
+                    .stage = spritz.PipelineStage.compute_shader,
                 }},
                 .timeline_signals = &.{.{ .timeline = &tls[slot], .value = v2 }},
                 .fence = &frame.fence,

@@ -1,7 +1,7 @@
 // Usage: ./gemm <kernel.spv> [--bench]
 //
 // f32 row-major GEMM, square M = N = K. Dispatches the kernel, runs the
-// same multiply through Accelerate's cblas_sgemm, compares element-wise
+// same multiply through a portable CPU reference, compares element-wise
 // with relative tolerance, and prints GFLOP/s for both. With --bench,
 // follows up with steady-state timing via the shared bench harness.
 
@@ -16,25 +16,24 @@ const TOL: f32 = 1e-3;
 
 const Push = extern struct { m: u32, n: u32, k: u32 };
 
-const CBLAS_ORDER = enum(c_uint) { row_major = 101, col_major = 102 };
-const CBLAS_TRANSPOSE = enum(c_uint) { no_trans = 111, trans = 112 };
-
-extern "c" fn cblas_sgemm(
-    order: CBLAS_ORDER,
-    trans_a: CBLAS_TRANSPOSE,
-    trans_b: CBLAS_TRANSPOSE,
-    m: c_int,
-    n: c_int,
-    k: c_int,
-    alpha: f32,
-    a: [*]const f32,
-    lda: c_int,
-    b: [*]const f32,
-    ldb: c_int,
-    beta: f32,
-    c: [*]f32,
-    ldc: c_int,
-) void;
+// Portable CPU reference: C = A * B, row-major, square. The ikj loop order
+// streams contiguous rows of B and C in the innermost loop, which the
+// optimizer vectorizes under ReleaseFast - a self-contained baseline that
+// needs no system BLAS.
+fn refSgemm(a: []const f32, b: []const f32, c: []f32, m: u32, n: u32, k: u32) void {
+    @memset(c, 0);
+    var i: u32 = 0;
+    while (i < m) : (i += 1) {
+        const c_row = c[i * n ..][0..n];
+        const a_row = a[i * k ..][0..k];
+        var p: u32 = 0;
+        while (p < k) : (p += 1) {
+            const a_ip = a_row[p];
+            const b_row = b[p * n ..][0..n];
+            for (c_row, b_row) |*cv, bv| cv.* += a_ip * bv;
+        }
+    }
+}
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -85,22 +84,7 @@ pub fn main(init: std.process.Init) !void {
     const c_got = try c_buf.read(alloc);
     defer alloc.free(c_got);
     const t1 = clock.now(init.io);
-    cblas_sgemm(
-        .row_major,
-        .no_trans,
-        .no_trans,
-        @intCast(M),
-        @intCast(N),
-        @intCast(K),
-        1.0,
-        a_host.ptr,
-        @intCast(K),
-        b_host.ptr,
-        @intCast(N),
-        0.0,
-        c_ref.ptr,
-        @intCast(N),
-    );
+    refSgemm(a_host, b_host, c_ref, M, N, K);
     const t2 = clock.now(init.io);
     const gpu_s = secondsBetween(t0, t1);
     const cpu_s = secondsBetween(t1, t2);
@@ -118,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
 
     const flops: f64 = 2.0 * @as(f64, @floatFromInt(M)) * @as(f64, @floatFromInt(N)) * @as(f64, @floatFromInt(K));
     std.debug.print(
-        "ok: gemm {d}x{d}x{d} max_rel={e:.2}\n  gpu (dispatch+readback): {d:>8.3} ms  {d:>6.1} GFLOP/s\n  cpu (cblas_sgemm):       {d:>8.3} ms  {d:>6.1} GFLOP/s\n",
+        "ok: gemm {d}x{d}x{d} max_rel={e:.2}\n  gpu (dispatch+readback): {d:>8.3} ms  {d:>6.1} GFLOP/s\n  cpu (zig reference):     {d:>8.3} ms  {d:>6.1} GFLOP/s\n",
         .{
             M,              N,                   K,              max_rel,
             gpu_s * 1000.0, flops / gpu_s / 1e9, cpu_s * 1000.0, flops / cpu_s / 1e9,

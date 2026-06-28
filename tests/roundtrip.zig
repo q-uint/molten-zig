@@ -1,13 +1,13 @@
 const std = @import("std");
-const molten = @import("molten");
+const spritz = @import("spritz");
 
 const double_spv = @embedFile("double_spv");
 const atomic_sum_spv = @embedFile("atomic_sum_spv");
 
 const N: usize = 256;
 
-fn initContextOrSkip() !molten.Context {
-    return molten.Context.init(std.testing.allocator, .{}) catch |err| switch (err) {
+fn initContextOrSkip() !spritz.Context {
+    return spritz.Context.init(std.testing.allocator, .{}) catch |err| switch (err) {
         error.NoPhysicalDevice,
         error.InitializationFailed,
         error.IncompatibleDriver,
@@ -110,10 +110,10 @@ test "ring exhausts after ring_size records without reset" {
     var pipeline = try ctx.loadPipeline(double_spv, .{ .binding_count = 2, .descriptor_ring_size = 2 });
     defer pipeline.deinit();
 
-    var cmd = try molten.CommandBuffer.init(&ctx);
+    var cmd = try spritz.CommandBuffer.init(&ctx);
     defer cmd.deinit();
     try cmd.begin();
-    const binds = [_]molten.BindEntry{ in.bind(), out.bind() };
+    const binds = [_]spritz.BindEntry{ in.bind(), out.bind() };
     try pipeline.record(&cmd, &binds, .{ .groups = .{ 1, 1, 1 } });
     try pipeline.record(&cmd, &binds, .{ .groups = .{ 1, 1, 1 } });
     try std.testing.expectError(
@@ -132,10 +132,10 @@ test "record rejects wrong binding count" {
     var pipeline = try ctx.loadPipeline(double_spv, .{ .binding_count = 2 });
     defer pipeline.deinit();
 
-    var cmd = try molten.CommandBuffer.init(&ctx);
+    var cmd = try spritz.CommandBuffer.init(&ctx);
     defer cmd.deinit();
     try cmd.begin();
-    const binds = [_]molten.BindEntry{in.bind()};
+    const binds = [_]spritz.BindEntry{in.bind()};
     try std.testing.expectError(
         error.InvalidArgument,
         pipeline.record(&cmd, &binds, .{ .groups = .{ 1, 1, 1 } }),
@@ -159,20 +159,20 @@ test "timestamp query measures dispatch duration" {
     var pipeline = try ctx.loadPipeline(double_spv, .{ .binding_count = 2 });
     defer pipeline.deinit();
 
-    var pool = try molten.QueryPool.init(&ctx, 2);
+    var pool = try spritz.QueryPool.init(&ctx, 2);
     defer pool.deinit();
 
-    var cmd = try molten.CommandBuffer.init(&ctx);
+    var cmd = try spritz.CommandBuffer.init(&ctx);
     defer cmd.deinit();
     try cmd.begin();
     pool.reset(&cmd);
-    pool.writeTimestamp(&cmd, molten.PipelineStage.top_of_pipe, 0);
+    pool.writeTimestamp(&cmd, spritz.PipelineStage.top_of_pipe, 0);
     try pipeline.record(&cmd, &.{ in.bind(), out.bind() }, .{ .groups = .{ 1, 1, 1 } });
-    pool.writeTimestamp(&cmd, molten.PipelineStage.compute_shader, 1);
+    pool.writeTimestamp(&cmd, spritz.PipelineStage.compute_shader, 1);
     cmd.barrierComputeToHost();
     try cmd.end();
 
-    var fence = try molten.Fence.init(&ctx);
+    var fence = try spritz.Fence.init(&ctx);
     defer fence.deinit();
     try ctx.submit(.{ .cmd = &cmd, .fence = &fence });
     try fence.wait(std.time.ns_per_s);
@@ -187,7 +187,7 @@ test "loadPipeline rejects oversized push constant" {
     var ctx = try initContextOrSkip();
     defer ctx.deinit();
 
-    const too_big = molten.options.max_push_constant_size + 4;
+    const too_big = spritz.options.max_push_constant_size + 4;
     try std.testing.expectError(
         error.PushConstantTooLarge,
         ctx.loadPipeline(double_spv, .{ .binding_count = 2, .push_constant_size = too_big }),

@@ -6,9 +6,9 @@ pub fn build(b: *std.Build) !void {
 
     const env = b.graph.environ_map;
     const vulkan_sdk = env.get("VULKAN_SDK") orelse
-        fatal("VULKAN_SDK not set (required by molten's build.zig) - enter the dev shell with `nix develop`", .{});
+        fatal("VULKAN_SDK not set (required by spritz's build.zig) - enter the dev shell with `nix develop`", .{});
     const vk_loader_lib = env.get("VK_LOADER_LIB") orelse
-        fatal("VK_LOADER_LIB not set (required by molten's build.zig) - enter the dev shell with `nix develop`", .{});
+        fatal("VK_LOADER_LIB not set (required by spritz's build.zig) - enter the dev shell with `nix develop`", .{});
     const vk_loader_dir = std.fs.path.dirname(vk_loader_lib) orelse
         fatal("VK_LOADER_LIB={s} has no directory component", .{vk_loader_lib});
     const vulkan_include = b.pathJoin(&.{ vulkan_sdk, "include" });
@@ -27,26 +27,26 @@ pub fn build(b: *std.Build) !void {
 
     // Public module: consumers add this as an import. Carries Vulkan
     // include/lib/link config so consumers don't repeat it.
-    const molten = b.addModule("molten", .{
-        .root_source_file = b.path("src/molten.zig"),
+    const spritz = b.addModule("spritz", .{
+        .root_source_file = b.path("src/spritz.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     const vk_mod = translate_vk.createModule();
-    molten.addImport("c", vk_mod);
-    molten.linkSystemLibrary("vulkan", .{});
-    molten.addIncludePath(.{ .cwd_relative = vulkan_include });
-    molten.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
+    spritz.addImport("c", vk_mod);
+    spritz.linkSystemLibrary("vulkan", .{});
+    spritz.addIncludePath(.{ .cwd_relative = vulkan_include });
+    spritz.addLibraryPath(.{ .cwd_relative = vk_loader_dir });
 
     // Sanity check: compile the library on its own. Useful for catching
     // breakage even before any example builds.
     const lib_check = b.addLibrary(.{
-        .name = "molten",
-        .root_module = molten,
+        .name = "spritz",
+        .root_module = spritz,
         .linkage = .static,
     });
-    const check_step = b.step("check", "Type-check the molten library");
+    const check_step = b.step("check", "Type-check the spritz library");
     check_step.dependOn(&lib_check.step);
 
     // Live-Vulkan tests. Each test that needs a device skips itself if
@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .link_libc = true,
     });
-    tests_mod.addImport("molten", molten);
+    tests_mod.addImport("spritz", spritz);
     tests_mod.addImport("c", vk_mod);
     tests_mod.linkSystemLibrary("vulkan", .{});
     tests_mod.addIncludePath(.{ .cwd_relative = vulkan_include });
@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
             .link_libc = true,
         });
-        rt_mod.addImport("molten", molten);
+        rt_mod.addImport("spritz", spritz);
         rt_mod.addImport("c", vk_mod);
         // Each test kernel compiled by the patched compiler and embedded under
         // its import name. Add a kernel by appending one tuple here.
@@ -100,7 +100,7 @@ pub fn build(b: *std.Build) !void {
 
     // Meta-steps that run `zig build all` / `zig build bench` in every
     // example package. Each example is an independent package with its
-    // own build.zig consuming molten as a path dependency, so we shell
+    // own build.zig consuming spritz as a path dependency, so we shell
     // out rather than wiring the child build graphs in - that would
     // re-enter this build.zig as a dependency and tangle target/optimize
     // propagation. Only registered when this build.zig is the top-level
@@ -180,7 +180,7 @@ pub const CompileOptions = struct {
 /// Build helper for consumers: compile a .zig kernel to a .spv file using
 /// the patched compiler at vendor/zig/zig-out/bin/zig.
 ///
-/// `dep` is the molten dependency obtained from `b.dependency("molten", .{})`.
+/// `dep` is the spritz dependency obtained from `b.dependency("spritz", .{})`.
 pub fn compileKernel(
     b: *std.Build,
     dep: *std.Build.Dependency,
@@ -190,7 +190,7 @@ pub fn compileKernel(
 ) KernelArtifact {
     const patched_zig = dep.builder.root.joinString(b.allocator, "vendor/zig/zig-out/bin/zig") catch @panic("OOM");
     dep.builder.root.root_dir.handle.access(b.graph.io, "vendor/zig/zig-out/bin/zig", .{}) catch
-        fatal("patched zig missing at {s} - run scripts/build-zig.sh in the molten dep first", .{patched_zig});
+        fatal("patched zig missing at {s} - run scripts/build-zig.sh in the spritz dep first", .{patched_zig});
 
     const opt_flag = switch (opts.optimize) {
         .Debug => "-ODebug",
@@ -223,7 +223,7 @@ pub fn compileKernel(
     else
         compile.addArg("-mcpu=generic+v1_4");
 
-    // The `gpu` module (molten's kernel-side SPIR-V helpers) is always
+    // The `gpu` module (spritz's kernel-side SPIR-V helpers) is always
     // available to kernels via `@import("gpu")`, plus any caller imports.
     const gpu_import: KernelImport = .{ .name = "gpu", .path = dep.path("src/kernel/gpu.zig") };
 
@@ -274,7 +274,7 @@ pub fn validateSpv(
 
 /// Compile a root-package test kernel with the patched compiler and validate
 /// it. Mirrors compileKernel but resolves the patched zig via b.root, since the
-/// molten root build has no molten dependency handle to thread through.
+/// spritz root build has no spritz dependency handle to thread through.
 fn testKernelSpv(b: *std.Build, src_rel: []const u8) std.Build.LazyPath {
     const patched_zig = b.root.joinString(b.allocator, "vendor/zig/zig-out/bin/zig") catch @panic("OOM");
     const basename = b.fmt("{s}.spv", .{std.fs.path.stem(src_rel)});
@@ -295,7 +295,7 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-/// Shared scaffolding for an example app. Wires the `molten` + `common`
+/// Shared scaffolding for an example app. Wires the `spritz` + `common`
 /// path deps, builds the exe module, installs the artifact, and exposes
 /// the bits later steps need (the dep handle for compileKernel, the
 /// `all`/`bench` step roots). Each example calls this then layers on its
@@ -313,18 +313,11 @@ pub const ExampleApp = struct {
     bench: *std.Build.Step,
 };
 
-pub const ExampleOptions = struct {
-    /// Extra framework names to link (e.g. "Accelerate" for gemm). Picks
-    /// up SDKROOT from the environment for the framework search path,
-    /// matching how the Apple toolchain locates system frameworks.
-    frameworks: []const []const u8 = &.{},
-};
-
-pub fn standardExample(b: *std.Build, name: []const u8, opts: ExampleOptions) ExampleApp {
+pub fn standardExample(b: *std.Build, name: []const u8) ExampleApp {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const dep = b.dependency("molten", .{ .target = target, .optimize = optimize });
+    const dep = b.dependency("spritz", .{ .target = target, .optimize = optimize });
     const common = b.dependency("common", .{ .target = target, .optimize = optimize });
 
     const exe_mod = b.createModule(.{
@@ -332,15 +325,8 @@ pub fn standardExample(b: *std.Build, name: []const u8, opts: ExampleOptions) Ex
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("molten", dep.module("molten"));
+    exe_mod.addImport("spritz", dep.module("spritz"));
     exe_mod.addImport("common", common.module("common"));
-
-    if (opts.frameworks.len > 0) {
-        if (b.graph.environ_map.get("SDKROOT")) |sdk| {
-            exe_mod.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
-        }
-        for (opts.frameworks) |fw| exe_mod.linkFramework(fw, .{});
-    }
 
     const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
     b.installArtifact(exe);

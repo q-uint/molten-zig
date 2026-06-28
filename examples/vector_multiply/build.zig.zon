@@ -4,7 +4,7 @@
     .fingerprint = 0x8791a7381799b85b,
     .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
     .dependencies = .{
-        .molten = .{ .path = "../.." },
+        .spritz = .{ .path = "../.." },
         .common = .{ .path = "../common" },
     },
     .paths = .{

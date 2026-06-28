@@ -8,7 +8,7 @@
 //   bench: <label> | N=<runs> inner=<inner> | min=<...> p50=<...> p99=<...> +-<stddev> | <throughput>
 
 const std = @import("std");
-const molten = @import("molten");
+const spritz = @import("spritz");
 
 pub const Work = union(enum) {
     /// Bytes moved per dispatch (in + out). Reported as GB/s.
@@ -21,9 +21,9 @@ pub const Work = union(enum) {
 pub const Options = struct {
     label: []const u8,
     io: std.Io,
-    ctx: *molten.Context,
-    pipeline: *molten.Pipeline,
-    bindings: []const molten.BindEntry,
+    ctx: *spritz.Context,
+    pipeline: *spritz.Pipeline,
+    bindings: []const spritz.BindEntry,
     groups: [3]u32,
     push: ?[]const u8 = null,
     /// Per-batch dispatch count. Clamped to the pipeline's
@@ -58,16 +58,16 @@ pub fn run(options: Options) !Stats {
     var pipeline = options.pipeline;
     const inner = @min(options.inner, pipeline.ring_size);
 
-    var fence = try molten.Fence.init(options.ctx);
+    var fence = try spritz.Fence.init(options.ctx);
     defer fence.deinit();
 
-    var cmd = try molten.CommandBuffer.init(options.ctx);
+    var cmd = try spritz.CommandBuffer.init(options.ctx);
     defer cmd.deinit();
 
     // Two timestamps bracket each batch; pure-GPU time only when the device
     // supports it. null pool => wall-clock only, no behavioral change.
-    var pool: ?molten.QueryPool = if (options.ctx.timestampsSupported())
-        try molten.QueryPool.init(options.ctx, 2)
+    var pool: ?spritz.QueryPool = if (options.ctx.timestampsSupported())
+        try spritz.QueryPool.init(options.ctx, 2)
     else
         null;
     defer if (pool) |*p| p.deinit();
@@ -112,16 +112,16 @@ pub fn run(options: Options) !Stats {
 }
 
 fn recordBatch(
-    cmd: *molten.CommandBuffer,
-    pipeline: *molten.Pipeline,
+    cmd: *spritz.CommandBuffer,
+    pipeline: *spritz.Pipeline,
     options: Options,
     inner: u32,
-    pool: ?*molten.QueryPool,
+    pool: ?*spritz.QueryPool,
 ) !void {
     try cmd.begin();
     if (pool) |p| {
         p.reset(cmd);
-        p.writeTimestamp(cmd, molten.PipelineStage.top_of_pipe, 0);
+        p.writeTimestamp(cmd, spritz.PipelineStage.top_of_pipe, 0);
     }
     for (0..inner) |i| {
         try pipeline.record(cmd, options.bindings, .{
@@ -132,7 +132,7 @@ fn recordBatch(
         // overlap them; we want `inner` serial dispatches per batch.
         if (i + 1 < inner) cmd.barrierComputeToCompute();
     }
-    if (pool) |p| p.writeTimestamp(cmd, molten.PipelineStage.compute_shader, 1);
+    if (pool) |p| p.writeTimestamp(cmd, spritz.PipelineStage.compute_shader, 1);
     cmd.barrierComputeToHost();
     try cmd.end();
 }
@@ -174,9 +174,9 @@ fn printLine(label: []const u8, s: Stats, work: Work) void {
     std.debug.print(
         "bench: {s} | N={d} inner={d} | min={s} p50={s} p99={s} +-{s}",
         .{
-            label,                       s.samples,                       s.inner,
-            fmtTime(&min_b, s.min_ns),   fmtTime(&p50_b, s.p50_ns),
-            fmtTime(&p99_b, s.p99_ns),   fmtTime(&sd_b, @as(u64, @intFromFloat(s.stddev_ns))),
+            label,                                                s.samples,                 s.inner,
+            fmtTime(&min_b, s.min_ns),                            fmtTime(&p50_b, s.p50_ns), fmtTime(&p99_b, s.p99_ns),
+            fmtTime(&sd_b, @as(u64, @intFromFloat(s.stddev_ns))),
         },
     );
     switch (work) {

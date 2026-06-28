@@ -2,7 +2,7 @@ const std = @import("std");
 const vk = @import("c");
 const ctx_mod = @import("context.zig");
 const cmd_mod = @import("command.zig");
-const molten = @import("../molten.zig");
+const spritz = @import("../spritz.zig");
 const Context = ctx_mod.Context;
 const CommandBuffer = cmd_mod.CommandBuffer;
 
@@ -20,14 +20,14 @@ pub const DispatchOptions = struct {
 pub const PipelineOptions = struct {
     binding_count: u32,
     push_constant_size: u32 = 0,
-    /// 0 means use the comptime default from molten.options.
+    /// 0 means use the comptime default from spritz.options.
     descriptor_ring_size: u32 = 0,
 };
 
-const MAX_BINDINGS: u32 = molten.options.max_bindings;
-const MAX_PUSH_CONSTANT_SIZE: u32 = molten.options.max_push_constant_size;
-const DEFAULT_RING: u32 = molten.options.default_descriptor_ring_size;
-const MAX_RING: u32 = molten.options.max_descriptor_ring_size;
+const MAX_BINDINGS: u32 = spritz.options.max_bindings;
+const MAX_PUSH_CONSTANT_SIZE: u32 = spritz.options.max_push_constant_size;
+const DEFAULT_RING: u32 = spritz.options.default_descriptor_ring_size;
+const MAX_RING: u32 = spritz.options.max_descriptor_ring_size;
 
 pub const Pipeline = struct {
     ctx: *Context,

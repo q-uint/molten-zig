@@ -33,7 +33,7 @@ pub fn check(
     return mapResult(result);
 }
 
-/// Subset re-exported by molten.Error.
+/// Subset re-exported by spritz.Error.
 pub const Error = error{
     OutOfHostMemory,
     OutOfDeviceMemory,

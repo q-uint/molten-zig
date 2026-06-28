@@ -1,11 +1,11 @@
 const std = @import("std");
-const molten_build = @import("molten");
+const spritz_build = @import("spritz");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const dep = b.dependency("molten", .{
+    const dep = b.dependency("spritz", .{
         .target = target,
         .optimize = optimize,
     });
@@ -19,20 +19,20 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("molten", dep.module("molten"));
+    exe_mod.addImport("spritz", dep.module("spritz"));
 
     const exe = b.addExecutable(.{ .name = "chain", .root_module = exe_mod });
     b.installArtifact(exe);
 
-    const reduce_imports = [_]molten_build.KernelImport{
+    const reduce_imports = [_]spritz_build.KernelImport{
         .{ .name = "reduce", .path = dep_common.path("src/reduce.zig") },
     };
-    const kopts: molten_build.CompileOptions = .{
+    const kopts: spritz_build.CompileOptions = .{
         .imports = &reduce_imports,
         .optimize = .ReleaseFast,
         .variable_pointers = true,
     };
-    const sum_zig = molten_build.compileKernel(b, dep, "sum_zig", b.path("src/kernel_sum.zig"), kopts);
+    const sum_zig = spritz_build.compileKernel(b, dep, "sum_zig", b.path("src/kernel_sum.zig"), kopts);
 
     const install_spv = b.addInstallFileWithDir(sum_zig.spv, .prefix, "sum_zig.spv");
 

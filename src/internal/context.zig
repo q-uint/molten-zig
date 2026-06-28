@@ -3,13 +3,13 @@ const vk = @import("c");
 const buffer = @import("buffer.zig");
 const pipeline = @import("pipeline.zig");
 const cmd_mod = @import("command.zig");
-const molten = @import("../molten.zig");
+const spritz = @import("../spritz.zig");
 const diag_mod = @import("diagnostics.zig");
 
 pub const Diagnostics = diag_mod.Diagnostics;
 pub const check = diag_mod.check;
 
-const MAX_SEMAPHORES: u32 = molten.options.max_semaphores_per_submit;
+const MAX_SEMAPHORES: u32 = spritz.options.max_semaphores_per_submit;
 
 pub const SemaphoreWait = struct {
     semaphore: *cmd_mod.Semaphore,
@@ -37,7 +37,7 @@ pub const SubmitOptions = struct {
 };
 
 pub const Options = struct {
-    app_name: [:0]const u8 = "molten-zig",
+    app_name: [:0]const u8 = "spritz-zig",
     enable_validation_if_available: bool = true,
     diagnostics: ?*Diagnostics = null,
 };
@@ -62,7 +62,7 @@ pub const Context = struct {
             .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
             .pApplicationName = options.app_name,
             .applicationVersion = 0,
-            .pEngineName = "molten-zig",
+            .pEngineName = "spritz-zig",
             .engineVersion = 0,
             .apiVersion = vk.VK_API_VERSION_1_4,
         };
@@ -120,6 +120,12 @@ pub const Context = struct {
             .queueCount = 1,
             .pQueuePriorities = &queue_prio,
         };
+        // VK_KHR_portability_subset only exists on non-conformant portability
+        // drivers (e.g. MoltenVK). The spec requires enabling it iff the device
+        // advertises it; native drivers (incl. Linux lavapipe) don't, so
+        // requesting it unconditionally fails vkCreateDevice with
+        // VK_ERROR_EXTENSION_NOT_PRESENT.
+        const want_portability = try hasDeviceExtension(allocator, diag, phys, vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         const dev_exts = [_][*c]const u8{vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME};
 
         // SPIR-V backend needs Int8/16/64; runtimeArray needs variablePointers.
@@ -166,8 +172,8 @@ pub const Context = struct {
             .pNext = &enabled_v12,
             .queueCreateInfoCount = 1,
             .pQueueCreateInfos = &queue_info,
-            .enabledExtensionCount = dev_exts.len,
-            .ppEnabledExtensionNames = &dev_exts,
+            .enabledExtensionCount = if (want_portability) dev_exts.len else 0,
+            .ppEnabledExtensionNames = if (want_portability) &dev_exts else null,
             .pEnabledFeatures = &enabled_features,
         };
         var device: vk.VkDevice = undefined;
@@ -350,6 +356,19 @@ fn hasLayer(allocator: std.mem.Allocator, diag: ?*Diagnostics, name: []const u8)
     try check(diag, vk.vkEnumerateInstanceLayerProperties(&count, props.ptr), "vkEnumerateInstanceLayerProperties(list)");
     for (props) |p| {
         if (std.mem.eql(u8, std.mem.sliceTo(&p.layerName, 0), name)) return true;
+    }
+    return false;
+}
+
+fn hasDeviceExtension(allocator: std.mem.Allocator, diag: ?*Diagnostics, phys: vk.VkPhysicalDevice, name: []const u8) !bool {
+    var count: u32 = 0;
+    try check(diag, vk.vkEnumerateDeviceExtensionProperties(phys, null, &count, null), "vkEnumerateDeviceExtensionProperties(count)");
+    if (count == 0) return false;
+    const props = try allocator.alloc(vk.VkExtensionProperties, count);
+    defer allocator.free(props);
+    try check(diag, vk.vkEnumerateDeviceExtensionProperties(phys, null, &count, props.ptr), "vkEnumerateDeviceExtensionProperties(list)");
+    for (props) |p| {
+        if (std.mem.eql(u8, std.mem.sliceTo(&p.extensionName, 0), name)) return true;
     }
     return false;
 }

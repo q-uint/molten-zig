@@ -25,7 +25,7 @@ pub const PipelineStageFlags = command.PipelineStageFlags;
 pub const Diagnostics = diagnostics.Diagnostics;
 pub const check = diagnostics.check;
 
-/// Override via `pub const molten_options: molten.Options` in your root file.
+/// Override via `pub const spritz_options: spritz.Options` in your root file.
 pub const Options = struct {
     max_bindings: u32 = 16,
     max_push_constant_size: u32 = 128,
@@ -34,8 +34,8 @@ pub const Options = struct {
     max_semaphores_per_submit: u32 = 8,
 };
 
-pub const options: Options = if (@hasDecl(@import("root"), "molten_options"))
-    @import("root").molten_options
+pub const options: Options = if (@hasDecl(@import("root"), "spritz_options"))
+    @import("root").spritz_options
 else
     .{};
 
@@ -63,7 +63,7 @@ pub const Error = error{
     Timeout,
     RingExhausted,
 
-    // Comptime-cap overflows; bump the matching molten.Options field.
+    // Comptime-cap overflows; bump the matching spritz.Options field.
     TooManyBindings,
     PushConstantTooLarge,
     RingSizeTooLarge,

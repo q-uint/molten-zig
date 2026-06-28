@@ -1,7 +1,7 @@
 .{
-    .name = .molten,
+    .name = .spritz,
     .version = "0.0.0",
-    .fingerprint = 0x8e4206317f4accba, // Changing this has security and trust implications.
+    .fingerprint = 0xb815826b2c7a7032,
     .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
     .dependencies = .{},
     .paths = .{

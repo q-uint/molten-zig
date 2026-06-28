@@ -5,7 +5,7 @@
 // without re-doing the setup.
 
 const std = @import("std");
-const molten = @import("molten");
+const spritz = @import("spritz");
 
 pub const bench = @import("bench.zig");
 
@@ -45,12 +45,12 @@ pub const Args = struct {
     }
 };
 
-/// Owns the SPV bytes and the molten Context for the lifetime of an
+/// Owns the SPV bytes and the spritz Context for the lifetime of an
 /// example run. Created once, used for verification and benchmarking.
 pub const Session = struct {
     init: std.process.Init,
     alloc: std.mem.Allocator,
-    ctx: molten.Context,
+    ctx: spritz.Context,
     spv: []u8,
     spv_path: []const u8,
 
@@ -58,7 +58,7 @@ pub const Session = struct {
         const spv = try std.Io.Dir.cwd().readFileAlloc(init.io, spv_path, alloc, .limited(64 * 1024 * 1024));
         errdefer alloc.free(spv);
 
-        var ctx = try molten.Context.init(alloc, .{});
+        var ctx = try spritz.Context.init(alloc, .{});
         errdefer ctx.deinit();
         std.debug.print("device: {s}\n", .{ctx.deviceName()});
 
@@ -136,8 +136,8 @@ pub const Session = struct {
 
 pub const BenchOptions = struct {
     label: []const u8,
-    pipeline: *molten.Pipeline,
-    bindings: []const molten.BindEntry,
+    pipeline: *spritz.Pipeline,
+    bindings: []const spritz.BindEntry,
     groups: [3]u32,
     push: ?[]const u8 = null,
     inner: u32 = 4,

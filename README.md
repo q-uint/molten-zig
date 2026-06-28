@@ -1,21 +1,25 @@
-# molten
+# spritz
 
-Compute kernels written in Zig, lowered to SPIR-V via the self-hosted backend, dispatched on Apple Silicon GPUs through Vulkan/MoltenVK.
+Compute kernels written in Zig, lowered to SPIR-V by the self-hosted Zig backend, dispatched on any Vulkan device — MoltenVK on Apple Silicon, mesa/lavapipe or a native GPU driver on Linux.
 
-Apple Silicon only. Compute only. Early-stage learning project.
+Compute only. Early-stage learning project.
+
+The name is a splash of **SPIR**-**V** through **Z**ig.
+
+**How it works.** Kernels are ordinary Zig — no GLSL, no HLSL, no separate shading language. A patched Zig compiler lowers them straight to SPIR-V through its self-hosted `spirv32-vulkan` backend (`zig build-obj`), so one language and one toolchain produce both the host program and the device code. The resulting `.spv` is handed to Vulkan via `vkCreateShaderModule` and run as a compute pipeline. Every example also ships a hand-written GLSL kernel compiled to SPIR-V, so the Zig-derived module can be parity-checked against a known-good baseline.
 
 ## Example
 
 ```zig
 const std = @import("std");
-const molten = @import("molten");
+const spritz = @import("spritz");
 
 const N: u32 = 1024;
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
 
-    var ctx = try molten.Context.init(alloc, .{});
+    var ctx = try spritz.Context.init(alloc, .{});
     defer ctx.deinit();
 
     var in  = try ctx.createBuffer(f32, N); defer in.deinit();
@@ -40,7 +44,7 @@ See [examples/vector_multiply](examples/vector_multiply/) for the runnable consu
 - [examples/wg_reduce](examples/wg_reduce/) - single-workgroup tree reduction (shared scratch + barriers)
 - [examples/reduce](examples/reduce/) - tiled reduction across workgroups, push-constant `(n, tile)`
 - [examples/matrix_transpose](examples/matrix_transpose/) - shared-memory tile transpose
-- [examples/gemm](examples/gemm/) - f32 GEMM, parity-checked against Accelerate `cblas_sgemm`
+- [examples/gemm](examples/gemm/) - f32 GEMM, parity-checked against a portable CPU reference
 - [examples/convolution](examples/convolution/) - 3x3 box-sum stencil
 - [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
 - [examples/cg](examples/cg/) - GPU-resident conjugate gradient: scalars and the stopping test stay on-device, parity-checked against a CPU reference
@@ -93,14 +97,13 @@ Zig kernel (.zig)
    |  patched zig build-obj -target spirv32-vulkan
    v
 SPIR-V (.spv)
-   |  vkCreateShaderModule
+   |  vkCreateShaderModule + compute pipeline
    v
-MoltenVK
-   |  translates SPIR-V -> MSL, Vulkan -> Metal
-   v
-Metal
-   v
-Apple GPU
+Vulkan driver
+   |
+   +-- MoltenVK (Apple Silicon): SPIR-V -> MSL, Vulkan -> Metal -> Apple GPU
+   +-- lavapipe (Linux/CI):      software rasterizer, no GPU required
+   +-- native ICD (Linux):       vendor driver -> discrete/integrated GPU
 ```
 
 ## Setup
@@ -117,7 +120,7 @@ Then run an example:
 
 ```sh
 cd examples/vector_multiply
-zig build all                   # validate both kernels, dispatch both through MoltenVK
+zig build all                   # validate both kernels, dispatch both through Vulkan
 zig build bench                 # steady-state timing of both kernels
 ```
 
@@ -167,7 +170,7 @@ Kernels default to `spirv32-vulkan`. GLSL/Vulkan compute is 32-bit by convention
 - `Semaphore` / `Timeline` / `Fence` - binary and timeline sync primitives, wired through `SubmitOptions`.
 - `Diagnostics` - optional sink threaded through `Context.init` and friends; captures the failing Vulkan call and `VkResult` so typed errors stay terse.
 
-Tunables (override by declaring `pub const molten_options: molten.Options = .{ ... }` in your root file): `max_bindings`, `max_push_constant_size`, `max_descriptor_ring_size`, `default_descriptor_ring_size`, `max_semaphores_per_submit`.
+Tunables (override by declaring `pub const spritz_options: spritz.Options = .{ ... }` in your root file): `max_bindings`, `max_push_constant_size`, `max_descriptor_ring_size`, `default_descriptor_ring_size`, `max_semaphores_per_submit`.
 
 ## Scope
 

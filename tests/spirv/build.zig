@@ -1,11 +1,11 @@
 const std = @import("std");
-const molten_build = @import("molten");
+const spritz_build = @import("spritz");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const dep = b.dependency("molten", .{ .target = target, .optimize = optimize });
+    const dep = b.dependency("spritz", .{ .target = target, .optimize = optimize });
 
     const Smoke = struct { name: []const u8, optimize: std.builtin.OptimizeMode = .ReleaseFast };
     const smokes = [_]Smoke{
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) !void {
     for (smokes) |smoke| {
         const name = smoke.name;
         const src = b.fmt("src/{s}.zig", .{name});
-        const k = molten_build.compileKernel(b, dep, name, b.path(src), .{
+        const k = spritz_build.compileKernel(b, dep, name, b.path(src), .{
             .optimize = smoke.optimize,
             .variable_pointers = true,
         });

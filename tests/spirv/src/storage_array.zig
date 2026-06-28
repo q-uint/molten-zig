@@ -8,7 +8,7 @@
 //!   the type that results from indexing into the base '%_arr_float_uint_256_0'
 //!   (The types must be the exact same Id)
 //!
-//! Reproduces with raw @extern too (no molten code); see the PR for the
+//! Reproduces with raw @extern too (no spritz code); see the PR for the
 //! reduced form. Requires +variable_pointers.
 
 const gpu = @import("gpu");
