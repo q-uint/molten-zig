@@ -41,7 +41,9 @@ See [examples/vector_multiply](examples/vector_multiply/) for the runnable consu
 - [examples/reduce](examples/reduce/) - tiled reduction across workgroups, push-constant `(n, tile)`
 - [examples/matrix_transpose](examples/matrix_transpose/) - shared-memory tile transpose
 - [examples/gemm](examples/gemm/) - f32 GEMM, parity-checked against Accelerate `cblas_sgemm`
+- [examples/convolution](examples/convolution/) - 3x3 box-sum stencil
 - [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
+- [examples/cg](examples/cg/) - GPU-resident conjugate gradient: scalars and the stopping test stay on-device, parity-checked against a CPU reference
 
 ## Writing a kernel
 
@@ -120,6 +122,36 @@ zig build bench                 # steady-state timing of both kernels
 ```
 
 `build all` runs the example twice: once with the GLSL-derived `.spv` (the parity baseline), once with the Zig-derived `.spv`. Both must produce element-wise `2x` output. From the repo root, `zig build examples` runs `all` across every example.
+
+## Running tests and examples
+
+There are two scopes. The repo root drives the molten library; each `examples/<name>/` is an independent package that consumes molten as a path dependency, so you `cd` into one to drive it directly.
+
+From the repo root:
+
+```sh
+zig build check        # type-check the library (fast, no device)
+zig build test         # library tests; each device test self-skips when no GPU is present
+zig build examples     # run `zig build all` in every example
+zig build examples-bench
+```
+
+`zig build test` at the root covers the library only. It does not run the examples' checks; `zig build examples` does that, by invoking each example's `all` step (into which parity checks are wired). The two are separate gates.
+
+Inside an example directory the available steps vary by example:
+
+```sh
+cd examples/<name>
+zig build            # compile kernels + exe, install the .spv files
+zig build all        # dispatch every kernel variant once (verify)
+zig build run        # run the program end to end (cg, chain)
+zig build run-<v>    # run one named variant, e.g. run-zig / run-sum (reduce, gemm, ...)
+zig build bench      # steady-state timing
+zig build test       # host unit tests, no device (cg, common)
+zig build dis        # disassemble the spv (reduce, wg_reduce)
+```
+
+The `cg` example splits its checks by what they need: `zig build test` runs the CPU reference against the analytic solution (host only, proves the algorithm), and `zig build run` solves on the GPU and parity-checks against that reference across several sizes (needs a device, proves the implementation). Its `run` is wired into `all`, so `zig build examples` from the root exercises the parity sweep too.
 
 ## Kernel target
 
