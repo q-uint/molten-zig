@@ -48,6 +48,7 @@ See [examples/vector_multiply](examples/vector_multiply/) for the runnable consu
 - [examples/convolution](examples/convolution/) - 3x3 box-sum stencil
 - [examples/chain](examples/chain/) - multi-dispatch pipeline reusing buffers across passes
 - [examples/cg](examples/cg/) - GPU-resident conjugate gradient: scalars and the stopping test stay on-device, parity-checked against a CPU reference
+- [examples/mandelbrot](examples/mandelbrot/) - per-pixel escape-time Mandelbrot, push-constant view rect, dumped as a PPM ([image](examples/mandelbrot/mandelbrot.png))
 
 ## Writing a kernel
 
