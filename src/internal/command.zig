@@ -99,6 +99,80 @@ pub const CommandBuffer = struct {
     }
 };
 
+/// Timestamp query pool. `writeTimestamp` records a GPU tick at the given
+/// query index; `elapsedNs` reads two back as nanoseconds via the device's
+/// timestampPeriod. Reset the pool (host or via `reset` in a command buffer)
+/// before reusing query slots in a new submission.
+pub const QueryPool = struct {
+    ctx: *Context,
+    handle: vk.VkQueryPool,
+    count: u32,
+
+    pub fn init(ctx: *Context, count: u32) !QueryPool {
+        std.debug.assert(count > 0);
+        const info: vk.VkQueryPoolCreateInfo = .{
+            .sType = vk.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .queryType = vk.VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = count,
+        };
+        var handle: vk.VkQueryPool = undefined;
+        try ctx_mod.check(ctx.diag, vk.vkCreateQueryPool(ctx.device, &info, null, &handle), "vkCreateQueryPool");
+        // No host-side reset here: it needs the hostQueryReset feature, and the
+        // caller must record QueryPool.reset(cmd) before the writes anyway.
+        return .{ .ctx = ctx, .handle = handle, .count = count };
+    }
+
+    pub fn deinit(self: *QueryPool) void {
+        vk.vkDestroyQueryPool(self.ctx.device, self.handle, null);
+        self.* = undefined;
+    }
+
+    /// Reset every query slot. Must precede the writes that reuse them, in the
+    /// same submission ordering (recorded here into `cmd`).
+    pub fn reset(self: *QueryPool, cmd: *CommandBuffer) void {
+        vk.vkCmdResetQueryPool(cmd.handle, self.handle, 0, self.count);
+    }
+
+    /// Record a timestamp at `index`, written once `stage` completes for all
+    /// prior commands. Use top_of_pipe before the work and compute_shader after.
+    pub fn writeTimestamp(self: *QueryPool, cmd: *CommandBuffer, stage: PipelineStageFlags, index: u32) void {
+        std.debug.assert(index < self.count);
+        vk.vkCmdWriteTimestamp(cmd.handle, stage, self.handle, index);
+    }
+
+    /// Read query `index` as a raw tick count. The caller must have drained the
+    /// submission that wrote it (Context.waitIdle or a fence) first; we don't
+    /// pass WAIT_BIT because MoltenVK can leave it pending forever even when the
+    /// queue is idle, hanging the read.
+    pub fn ticks(self: *QueryPool, index: u32) !u64 {
+        std.debug.assert(index < self.count);
+        var value: u64 = 0;
+        try ctx_mod.check(
+            self.ctx.diag,
+            vk.vkGetQueryPoolResults(
+                self.ctx.device,
+                self.handle,
+                index,
+                1,
+                @sizeOf(u64),
+                &value,
+                @sizeOf(u64),
+                vk.VK_QUERY_RESULT_64_BIT,
+            ),
+            "vkGetQueryPoolResults",
+        );
+        return value;
+    }
+
+    /// Nanoseconds between two timestamps, scaled by the device timestampPeriod.
+    pub fn elapsedNs(self: *QueryPool, start: u32, end: u32) !u64 {
+        const t0 = try self.ticks(start);
+        const t1 = try self.ticks(end);
+        const delta: f64 = @floatFromInt(t1 -% t0);
+        return @intFromFloat(delta * self.ctx.timestamp_period_ns);
+    }
+};
+
 pub const Semaphore = struct {
     ctx: *Context,
     handle: vk.VkSemaphore,

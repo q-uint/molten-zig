@@ -49,6 +49,9 @@ pub const Stats = struct {
     p99_ns: u64,
     mean_ns: f64,
     stddev_ns: f64,
+    /// Per-dispatch pure-GPU time from timestamp queries, null when the device
+    /// has no usable timestamp support. Wall-clock (the fields above) always set.
+    gpu_min_ns: ?u64 = null,
 };
 
 pub fn run(options: Options) !Stats {
@@ -61,8 +64,16 @@ pub fn run(options: Options) !Stats {
     var cmd = try molten.CommandBuffer.init(options.ctx);
     defer cmd.deinit();
 
+    // Two timestamps bracket each batch; pure-GPU time only when the device
+    // supports it. null pool => wall-clock only, no behavioral change.
+    var pool: ?molten.QueryPool = if (options.ctx.timestampsSupported())
+        try molten.QueryPool.init(options.ctx, 2)
+    else
+        null;
+    defer if (pool) |*p| p.deinit();
+
     for (0..options.warmup) |_| {
-        try recordBatch(&cmd, pipeline, options, inner);
+        try recordBatch(&cmd, pipeline, options, inner, if (pool) |*p| p else null);
         try options.ctx.submit(.{ .cmd = &cmd, .fence = &fence });
         try fence.wait(options.timeout_ns);
         try fence.reset();
@@ -73,14 +84,17 @@ pub fn run(options: Options) !Stats {
     const alloc = options.ctx.allocator;
     const per_dispatch_ns = try alloc.alloc(u64, options.samples);
     defer alloc.free(per_dispatch_ns);
+    const gpu_per_dispatch_ns = try alloc.alloc(u64, options.samples);
+    defer alloc.free(gpu_per_dispatch_ns);
 
     const clock = std.Io.Clock.awake;
-    for (per_dispatch_ns) |*slot| {
-        try recordBatch(&cmd, pipeline, options, inner);
+    for (per_dispatch_ns, gpu_per_dispatch_ns) |*slot, *gpu_slot| {
+        try recordBatch(&cmd, pipeline, options, inner, if (pool) |*p| p else null);
         const t0 = clock.now(options.io);
         try options.ctx.submit(.{ .cmd = &cmd, .fence = &fence });
         try fence.wait(options.timeout_ns);
         const t1 = clock.now(options.io);
+        if (pool) |*p| gpu_slot.* = (try p.elapsedNs(0, 1)) / inner;
         try fence.reset();
         pipeline.ringReset();
         try cmd.reset();
@@ -88,7 +102,11 @@ pub fn run(options: Options) !Stats {
         slot.* = batch_ns / inner;
     }
 
-    const stats = summarise(per_dispatch_ns, options.samples, inner);
+    var stats = summarise(per_dispatch_ns, options.samples, inner);
+    if (pool != null) {
+        std.mem.sort(u64, gpu_per_dispatch_ns, {}, std.sort.asc(u64));
+        stats.gpu_min_ns = gpu_per_dispatch_ns[0];
+    }
     printLine(options.label, stats, options.work);
     return stats;
 }
@@ -98,8 +116,13 @@ fn recordBatch(
     pipeline: *molten.Pipeline,
     options: Options,
     inner: u32,
+    pool: ?*molten.QueryPool,
 ) !void {
     try cmd.begin();
+    if (pool) |p| {
+        p.reset(cmd);
+        p.writeTimestamp(cmd, molten.PipelineStage.top_of_pipe, 0);
+    }
     for (0..inner) |i| {
         try pipeline.record(cmd, options.bindings, .{
             .groups = options.groups,
@@ -109,6 +132,7 @@ fn recordBatch(
         // overlap them; we want `inner` serial dispatches per batch.
         if (i + 1 < inner) cmd.barrierComputeToCompute();
     }
+    if (pool) |p| p.writeTimestamp(cmd, molten.PipelineStage.compute_shader, 1);
     cmd.barrierComputeToHost();
     try cmd.end();
 }
@@ -158,14 +182,21 @@ fn printLine(label: []const u8, s: Stats, work: Work) void {
     switch (work) {
         .bytes => |b| {
             const gbs = @as(f64, @floatFromInt(b)) / @as(f64, @floatFromInt(s.min_ns));
-            std.debug.print(" | {d:.2} GB/s\n", .{gbs});
+            std.debug.print(" | {d:.2} GB/s", .{gbs});
         },
         .flops => |f| {
             const gfs = @as(f64, @floatFromInt(f)) / @as(f64, @floatFromInt(s.min_ns));
-            std.debug.print(" | {d:.2} GFLOP/s\n", .{gfs});
+            std.debug.print(" | {d:.2} GFLOP/s", .{gfs});
         },
-        .none => std.debug.print("\n", .{}),
+        .none => {},
     }
+    // Pure-GPU min from timestamps, after the wall-clock line so the headline
+    // throughput stays first. gpu < wall by the submit/fence/readback overhead.
+    if (s.gpu_min_ns) |g| {
+        var gpu_b: [16]u8 = undefined;
+        std.debug.print(" | gpu={s}", .{fmtTime(&gpu_b, g)});
+    }
+    std.debug.print("\n", .{});
 }
 
 fn fmtTime(buf: []u8, ns: u64) []const u8 {

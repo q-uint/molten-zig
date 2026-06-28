@@ -142,6 +142,47 @@ test "record rejects wrong binding count" {
     );
 }
 
+test "timestamp query measures dispatch duration" {
+    var ctx = try initContextOrSkip();
+    defer ctx.deinit();
+
+    if (!ctx.timestampsSupported()) return error.SkipZigTest;
+
+    var in = try ctx.createBuffer(f32, N);
+    defer in.deinit();
+    var out = try ctx.createBuffer(f32, N);
+    defer out.deinit();
+    var input: [N]f32 = undefined;
+    for (0..N) |i| input[i] = @floatFromInt(i);
+    try in.write(&input);
+
+    var pipeline = try ctx.loadPipeline(double_spv, .{ .binding_count = 2 });
+    defer pipeline.deinit();
+
+    var pool = try molten.QueryPool.init(&ctx, 2);
+    defer pool.deinit();
+
+    var cmd = try molten.CommandBuffer.init(&ctx);
+    defer cmd.deinit();
+    try cmd.begin();
+    pool.reset(&cmd);
+    pool.writeTimestamp(&cmd, molten.PipelineStage.top_of_pipe, 0);
+    try pipeline.record(&cmd, &.{ in.bind(), out.bind() }, .{ .groups = .{ 1, 1, 1 } });
+    pool.writeTimestamp(&cmd, molten.PipelineStage.compute_shader, 1);
+    cmd.barrierComputeToHost();
+    try cmd.end();
+
+    var fence = try molten.Fence.init(&ctx);
+    defer fence.deinit();
+    try ctx.submit(.{ .cmd = &cmd, .fence = &fence });
+    try fence.wait(std.time.ns_per_s);
+    pipeline.ringReset();
+
+    const elapsed = try pool.elapsedNs(0, 1);
+    try std.testing.expect(elapsed > 0);
+    try std.testing.expect(elapsed < std.time.ns_per_s);
+}
+
 test "loadPipeline rejects oversized push constant" {
     var ctx = try initContextOrSkip();
     defer ctx.deinit();

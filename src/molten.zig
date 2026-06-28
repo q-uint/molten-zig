@@ -19,6 +19,7 @@ pub const FramePool = command.FramePool;
 pub const Semaphore = command.Semaphore;
 pub const Timeline = command.Timeline;
 pub const Fence = command.Fence;
+pub const QueryPool = command.QueryPool;
 pub const PipelineStage = command.PipelineStage;
 pub const PipelineStageFlags = command.PipelineStageFlags;
 pub const Diagnostics = diagnostics.Diagnostics;

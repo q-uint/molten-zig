@@ -53,6 +53,8 @@ pub const Context = struct {
     diag: ?*Diagnostics,
     device_name_buf: [vk.VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]u8,
     device_name_len: usize,
+    timestamp_period_ns: f64,
+    timestamp_valid_bits: u32,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Context {
         const diag = options.diagnostics;
@@ -200,6 +202,8 @@ pub const Context = struct {
             .diag = diag,
             .device_name_buf = undefined,
             .device_name_len = name_slice.len,
+            .timestamp_period_ns = phys_props.limits.timestampPeriod,
+            .timestamp_valid_bits = qf_props[queue_family].timestampValidBits,
         };
         @memcpy(ctx.device_name_buf[0..name_slice.len], name_slice);
         return ctx;
@@ -214,6 +218,16 @@ pub const Context = struct {
 
     pub fn deviceName(self: *const Context) []const u8 {
         return self.device_name_buf[0..self.device_name_len];
+    }
+
+    /// True when the compute queue can record timestamps with a usable period.
+    /// MoltenVK reports both on Apple Silicon; guard examples/tests on it anyway.
+    pub fn timestampsSupported(self: *const Context) bool {
+        return self.timestamp_valid_bits > 0 and self.timestamp_period_ns > 0;
+    }
+
+    pub fn waitIdle(self: *Context) !void {
+        try check(self.diag, vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle");
     }
 
     pub fn createBuffer(

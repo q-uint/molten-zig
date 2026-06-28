@@ -17,6 +17,8 @@ must_pass="vulkan1.2 vulkan1.3 vulkan1.4"
 expect_ceiling="vulkan1.0 vulkan1.1"
 rc=0
 
+echo "validate $(basename "$spv"):"
+
 for env in $must_pass; do
     if out=$(spirv-val --target-env "$env" "$spv" 2>&1); then
         echo "  $env: PASS"

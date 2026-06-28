@@ -1,0 +1,15 @@
+.{
+    .name = .convolution,
+    .version = "0.0.0",
+    .fingerprint = 0xa40dbcc83f795fd6,
+    .minimum_zig_version = "0.17.0-dev.249+845b6a8ef",
+    .dependencies = .{
+        .molten = .{ .path = "../.." },
+        .common = .{ .path = "../common" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

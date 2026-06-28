@@ -1,0 +1,29 @@
+#version 450
+
+// 8x8 tile per workgroup. Host dispatches (N/8, N/8, 1).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const uint N = 64;
+
+layout(set = 0, binding = 0) readonly buffer In  { float data[]; } in_buf;
+layout(set = 0, binding = 1)          buffer Out { float data[]; } out_buf;
+
+float at(int x, int y) {
+    uint cx = uint(clamp(x, 0, int(N) - 1));
+    uint cy = uint(clamp(y, 0, int(N) - 1));
+    return in_buf.data[cy * N + cx];
+}
+
+void main() {
+    uint gx = gl_GlobalInvocationID.x;
+    uint gy = gl_GlobalInvocationID.y;
+    if (gx >= N || gy >= N) return;
+
+    int x = int(gx);
+    int y = int(gy);
+    float sum = 0.0;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            sum += at(x + dx, y + dy);
+    out_buf.data[gy * N + gx] = sum;
+}
